@@ -14,6 +14,7 @@ import {
   CoreCollectionDiagnosticsSchema,
   CoreCollectionRecoverSchema,
   CoreCollectionSearchSchema,
+  CreateScheduledRunSchema,
   CreateVectorStoreSchema,
   DeleteAgentSchema,
   DeleteModelSchema,
@@ -24,7 +25,9 @@ import {
   FileContentSchema,
   FileIdSchema,
   GeneratePromptSchema,
+  ScheduledRunIdSchema,
   ScrapeUrlSchema,
+  UpdateScheduledRunSchema,
   UploadFileSchema,
   VectorStoreFileSchema,
   VectorStoreIdSchema,
@@ -468,6 +471,81 @@ const msqTools = [
       client.requestJson({
         method: 'GET',
         path: `vector_stores/${encodePathSegment(args.vectorStoreId)}/file-details`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_list_scheduled_runs',
+    description: 'List all scheduled runs for your account.',
+    parameters: EmptySchema,
+    run: async (client) =>
+      client.requestJson({
+        method: 'GET',
+        path: 'core/scheduled-runs',
+      }),
+  }),
+  defineTool({
+    name: 'msq_create_scheduled_run',
+    description: 'Create a new scheduled run for an agent with timing and delivery options.',
+    parameters: CreateScheduledRunSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'POST',
+        path: 'core/scheduled-runs',
+        body: args,
+      }),
+  }),
+  defineTool({
+    name: 'msq_update_scheduled_run',
+    description: 'Update an existing scheduled run by id.',
+    parameters: UpdateScheduledRunSchema,
+    run: async (client, args) => {
+      const { id, ...body } = args
+
+      return client.requestJson({
+        method: 'PUT',
+        path: `core/scheduled-runs/${encodePathSegment(id)}`,
+        body,
+      })
+    },
+  }),
+  defineTool({
+    name: 'msq_delete_scheduled_run',
+    description: 'Delete a scheduled run by id.',
+    parameters: ScheduledRunIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'DELETE',
+        path: `core/scheduled-runs/${encodePathSegment(args.id)}`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_toggle_scheduled_run',
+    description: 'Toggle a scheduled run enabled/disabled by id.',
+    parameters: ScheduledRunIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'PUT',
+        path: `core/scheduled-runs/${encodePathSegment(args.id)}/toggle`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_get_scheduled_run_results',
+    description: 'Get execution results for a scheduled run by id.',
+    parameters: ScheduledRunIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'GET',
+        path: `core/scheduled-runs/${encodePathSegment(args.id)}/results`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_get_user_settings',
+    description: 'Get current user settings including utility agent configuration.',
+    parameters: EmptySchema,
+    run: async (client) =>
+      client.requestJson({
+        method: 'GET',
+        path: 'core/user/settings',
       }),
   }),
 ] as const

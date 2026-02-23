@@ -196,3 +196,65 @@ export const FileContentSchema = z.object({
   fileId: NonEmptyString,
   maxBytes: z.number().int().positive().optional(),
 })
+
+export const ScheduledRunIdSchema = z.object({
+  id: NonEmptyString,
+})
+
+export const CreateScheduledRunSchema = z.object({
+  agentName: NonEmptyString,
+  prompt: z.string().min(1),
+  startDate: z.number(),
+  timesToRun: z.array(z.object({
+    hour: z.number().int().min(0).max(23),
+    minute: z.number().int().min(0).max(59),
+  })).min(1),
+  repeatInterval: z.enum(['daily', 'weekly', 'monthly', 'once']),
+  daysOfWeek: z.array(z.number().int().min(0).max(6)).optional(),
+  dayOfMonth: z.number().int().min(1).max(31).optional(),
+  status: z.enum(['enabled', 'disabled']).default('enabled'),
+  sendEmail: z.boolean().optional(),
+  deliveryMethod: z.enum(['email', 'slack']).optional(),
+  slackWebhookUrl: z.string().url().optional(),
+  slackMetadata: z.object({
+    scheduleId: z.string(),
+    slackUserId: z.string(),
+    deliveryChannelId: z.string(),
+    teamId: z.string(),
+  }).optional(),
+}).superRefine((data, ctx) => {
+  if (data.repeatInterval === 'weekly' && (!data.daysOfWeek || data.daysOfWeek.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'daysOfWeek is required for weekly schedules',
+      path: ['daysOfWeek'],
+    })
+  }
+  if (data.repeatInterval === 'monthly' && data.dayOfMonth === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'dayOfMonth is required for monthly schedules',
+      path: ['dayOfMonth'],
+    })
+  }
+  if (data.deliveryMethod === 'slack') {
+    if (!data.slackWebhookUrl) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'slackWebhookUrl is required for slack delivery',
+        path: ['slackWebhookUrl'],
+      })
+    }
+    if (!data.slackMetadata) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'slackMetadata is required for slack delivery',
+        path: ['slackMetadata'],
+      })
+    }
+  }
+})
+
+export const UpdateScheduledRunSchema = ScheduledRunIdSchema.merge(
+  CreateScheduledRunSchema.innerType().partial()
+)

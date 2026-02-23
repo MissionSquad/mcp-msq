@@ -40,6 +40,13 @@ const EXPECTED_TOOL_NAMES = [
   'msq_get_file_content',
   'msq_list_user_collections',
   'msq_get_vector_store_file_details',
+  'msq_list_scheduled_runs',
+  'msq_create_scheduled_run',
+  'msq_update_scheduled_run',
+  'msq_delete_scheduled_run',
+  'msq_toggle_scheduled_run',
+  'msq_get_scheduled_run_results',
+  'msq_get_user_settings',
 ] as const
 
 describe('MissionSquad MCP tool coverage', () => {
