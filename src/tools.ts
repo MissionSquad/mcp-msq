@@ -183,7 +183,7 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_add_agent',
-    description: 'Create or update an agent definition.',
+    description: 'Create or update an agent definition. Use the `tools` parameter with an array of tool function names (e.g. ["geolocate", "clearGeoCache"]) to assign MCP tools. The server will resolve function names to their MCP server automatically.',
     parameters: AddAgentSchema,
     run: async (client, args) =>
       client.requestJson({
