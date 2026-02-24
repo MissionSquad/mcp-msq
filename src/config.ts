@@ -2,6 +2,7 @@ import { UserError } from '@missionsquad/fastmcp'
 import dotenv from 'dotenv'
 import { z } from 'zod'
 import { MsqConfigError } from './errors.js'
+import { logger } from './logger.js'
 
 dotenv.config()
 
@@ -99,6 +100,8 @@ export function resolveRequestConfig(
   extraArgs: Record<string, unknown> | undefined,
   defaults: AppConfig = appConfig,
 ): ResolvedRequestConfig {
+  logger.debug(`resolveRequestConfig extraArgs keys: ${extraArgs ? Object.keys(extraArgs).join(', ') : 'undefined'}`)
+  logger.debug(`resolveRequestConfig defaults.defaultApiKey present: ${defaults.defaultApiKey !== undefined}`)
   const apiKey = readHiddenString(extraArgs, 'apiKey') ?? defaults.defaultApiKey
   if (apiKey === undefined || apiKey.trim().length === 0) {
     throw new UserError(

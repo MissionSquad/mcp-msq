@@ -2,6 +2,7 @@ import type { FastMCP } from '@missionsquad/fastmcp'
 import { z } from 'zod'
 import { toUserError } from './errors.js'
 import { stringifyResult } from './json.js'
+import { logger } from './logger.js'
 import { createMissionSquadClient, type MissionSquadClient } from './msq-client.js'
 import {
   AddAgentSchema,
@@ -559,6 +560,8 @@ export function registerMissionSquadTools(server: FastMCP<undefined>): void {
       description: tool.description,
       parameters: tool.parameters,
       execute: async (args, context) => {
+        logger.info(`Tool: ${tool.name} - called`)
+        logger.debug(`Tool: ${tool.name} - extraArgs keys: ${context.extraArgs ? Object.keys(context.extraArgs).join(', ') : 'none'}`)
         try {
           const client = createMissionSquadClient(context.extraArgs)
           const run = tool.run as (
@@ -566,8 +569,10 @@ export function registerMissionSquadTools(server: FastMCP<undefined>): void {
             args: unknown,
           ) => Promise<unknown>
           const result = await run(client, args)
+          logger.info(`Tool: ${tool.name} - success`)
           return stringifyResult(result)
         } catch (error) {
+          logger.error(`Tool: ${tool.name} - failed: ${error instanceof Error ? error.message : String(error)}`)
           throw toUserError(error, `Tool ${tool.name} failed`)
         }
       },

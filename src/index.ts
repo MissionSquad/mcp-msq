@@ -3,6 +3,7 @@
 import { FastMCP } from '@missionsquad/fastmcp'
 import { routeConsoleStdoutToStderr } from './stdio-safe-console.js'
 import { registerMissionSquadTools } from './tools.js'
+import { logger } from './logger.js'
 
 routeConsoleStdoutToStderr()
 
@@ -15,6 +16,7 @@ registerMissionSquadTools(server)
 
 async function main(): Promise<void> {
   await server.start({ transportType: 'stdio' })
+  logger.info('mcp-msq server started successfully')
 }
 
 async function shutdown(exitCode: number): Promise<void> {
