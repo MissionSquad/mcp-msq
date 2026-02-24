@@ -102,6 +102,7 @@ export const AddAgentSchema = z.object({
   overwrite: z.boolean().optional(),
   addToday: z.boolean().optional(),
   timezoneOffset: NonEmptyString.optional(),
+  tools: z.array(z.string()).optional(),
   selectedFunctions: z.record(z.array(z.string())).optional(),
 })
 

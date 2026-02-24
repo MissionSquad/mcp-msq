@@ -1,6 +1,6 @@
 {
   "name": "@missionsquad/mcp-msq",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "MCP server interface for the MissionSquad API",
   "type": "module",
   "main": "dist/index.js",
