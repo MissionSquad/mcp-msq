@@ -81,13 +81,13 @@ export const DiscoverProviderModelsSchema = z.object({
 })
 
 export const AddModelSchema = z.object({
-  name: NonEmptyString,
-  description: z.string(),
-  providerKey: NonEmptyString,
-  model: NonEmptyString,
-  testResponse: z.boolean().optional(),
-  getAllApiModels: z.boolean().optional(),
-  extractEmbeddingModels: z.boolean().optional(),
+  name: NonEmptyString.describe('Display name for the model in MissionSquad.'),
+  description: z.string().describe('Short description of the model.'),
+  providerKey: NonEmptyString.describe('The provider key (e.g. "openai", "anthropic") that serves this model.'),
+  model: NonEmptyString.describe('The provider\'s model identifier (e.g. "gpt-4o", "claude-sonnet-4-20250514").'),
+  testResponse: z.boolean().optional().describe('If true, send a test prompt to verify the model works.'),
+  getAllApiModels: z.boolean().optional().describe('If true, list all models from the provider API.'),
+  extractEmbeddingModels: z.boolean().optional().describe('If true, also extract embedding models from the provider.'),
 })
 
 export const DeleteModelSchema = z.object({
@@ -95,23 +95,51 @@ export const DeleteModelSchema = z.object({
 })
 
 export const AddAgentSchema = z.object({
-  name: NonEmptyString,
-  description: z.string(),
-  systemPrompt: z.string(),
-  model: NonEmptyString,
-  overwrite: z.boolean().optional(),
-  addToday: z.boolean().optional(),
-  timezoneOffset: NonEmptyString.optional(),
-  tools: z.array(z.string()).optional(),
-  selectedFunctions: z.record(z.array(z.string())).optional(),
-})
+  name: NonEmptyString.describe('Unique agent name.'),
+  description: z.string().describe('Short description of what the agent does.'),
+  systemPrompt: z.string().optional().describe(
+    'The system prompt. Either systemPrompt or systemPromptId is required. '
+    + 'For long prompts, prefer msq_generate_prompt first and pass systemPromptId instead.'
+  ),
+  systemPromptId: NonEmptyString.optional().describe(
+    'A promptId from msq_generate_prompt. The server resolves this to the cached prompt. '
+    + 'Use instead of systemPrompt to avoid output truncation on large prompts.'
+  ),
+  model: NonEmptyString.describe('The model NAME (not the model ID). Must match an existing model name from msq_get_core_config.'),
+  overwrite: z.boolean().optional().describe('If true, overwrite an existing agent with the same name.'),
+  addToday: z.boolean().optional().describe('If true, prepend today\'s date to the system prompt.'),
+  timezoneOffset: NonEmptyString.optional().describe('Timezone offset string (e.g. "-05:00") used when addToday is true.'),
+  tools: z.array(z.string()).optional().describe('Array of tool function names (e.g. ["geolocate"]). The server resolves these to MCP servers automatically.'),
+  selectedFunctions: z.record(z.array(z.string())).optional().describe('Map of MCP server name to function names. Alternative to tools; use one or the other.'),
+}).refine(
+  (data) => data.systemPrompt || data.systemPromptId,
+  { message: 'Either systemPrompt or systemPromptId must be provided.', path: ['systemPrompt'] }
+)
 
 export const DeleteAgentSchema = z.object({
   name: NonEmptyString,
 })
 
+export const UpdateAgentSchema = z.object({
+  name: NonEmptyString.describe('Name of the existing agent to update.'),
+  description: z.string().optional().describe('New description.'),
+  systemPrompt: z.string().optional().describe('New system prompt. Use systemPromptId for large prompts.'),
+  systemPromptId: NonEmptyString.optional().describe(
+    'A promptId from msq_generate_prompt to use as the new system prompt.'
+  ),
+  model: NonEmptyString.optional().describe('New model NAME. Must match an existing model name from msq_get_core_config.'),
+  addToday: z.boolean().optional().describe('If true, prepend today\'s date to the system prompt.'),
+  timezoneOffset: NonEmptyString.optional().describe('Timezone offset string (e.g. "-05:00") used when addToday is true.'),
+  tools: z.array(z.string()).optional().describe('Array of tool function names. Replaces all existing tools.'),
+  selectedFunctions: z.record(z.array(z.string())).optional().describe('Map of MCP server name to function names. Replaces existing selectedFunctions.'),
+  temperature: z.number().optional().describe('New temperature setting.'),
+  maxTokens: z.number().int().optional().describe('New max tokens setting.'),
+  combineSystemPrompts: z.boolean().optional().describe('Whether to combine system prompts from agent and messages.'),
+  convertSystemPrompt: z.boolean().optional().describe('Whether to convert additional system prompts to user messages.'),
+})
+
 export const GeneratePromptSchema = z.object({
-  model: NonEmptyString,
+  model: NonEmptyString.describe('The model NAME to use for prompt generation. Must match an existing model name from msq_get_core_config.'),
   messages: z.array(ChatMessageSchema).min(1),
   name: z.string().optional(),
   description: z.string().optional(),
