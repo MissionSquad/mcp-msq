@@ -1,6 +1,6 @@
 import type { FastMCP } from '@missionsquad/fastmcp'
 import { z } from 'zod'
-import { toUserError } from './errors.js'
+import { MsqApiError, toUserError } from './errors.js'
 import { stringifyResult } from './json.js'
 import { logger } from './logger.js'
 import { createMissionSquadClient, type MissionSquadClient } from './msq-client.js'
@@ -28,6 +28,7 @@ import {
   GeneratePromptSchema,
   ScheduledRunIdSchema,
   ScrapeUrlSchema,
+  UpdateAgentSchema,
   UpdateScheduledRunSchema,
   UploadFileSchema,
   VectorStoreFileSchema,
@@ -184,12 +185,30 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_add_agent',
-    description: 'Create or update an agent definition. Use the `tools` parameter with an array of tool function names (e.g. ["geolocate", "clearGeoCache"]) to assign MCP tools. The server will resolve function names to their MCP server automatically.',
+    description:
+      'Create or update an agent definition. '
+      + 'Accepts systemPromptId (from msq_generate_prompt) as an alternative to systemPrompt — '
+      + 'recommended for complex/long prompts to avoid output truncation. '
+      + 'Use the `tools` parameter with function names; the server resolves them to MCP servers.',
     parameters: AddAgentSchema,
     run: async (client, args) =>
       client.requestJson({
         method: 'POST',
         path: 'core/add/agent',
+        body: args,
+      }),
+  }),
+  defineTool({
+    name: 'msq_update_agent',
+    description:
+      'Update specific fields of an existing agent without recreating it. '
+      + 'Only provide fields you want to change; all others are preserved. '
+      + 'Accepts systemPromptId from msq_generate_prompt as an alternative to systemPrompt.',
+    parameters: UpdateAgentSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'PUT',
+        path: 'core/update/agent',
         body: args,
       }),
   }),
@@ -206,7 +225,11 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_generate_prompt',
-    description: 'Generate a prompt using MissionSquad core prompt generation.',
+    description:
+      'Generate a system prompt using MissionSquad core prompt generation. '
+      + 'Returns the generated prompt text and a promptId. '
+      + 'Pass the promptId to msq_add_agent or msq_update_agent via systemPromptId '
+      + 'to avoid re-emitting the full prompt (prevents output truncation on large prompts).',
     parameters: GeneratePromptSchema,
     run: async (client, args) =>
       client.requestJson({
@@ -572,7 +595,13 @@ export function registerMissionSquadTools(server: FastMCP<undefined>): void {
           logger.info(`Tool: ${tool.name} - success`)
           return stringifyResult(result)
         } catch (error) {
-          logger.error(`Tool: ${tool.name} - failed: ${error instanceof Error ? error.message : String(error)}`)
+          if (error instanceof MsqApiError) {
+            logger.error(
+              `Tool: ${tool.name} - API error: ${error.status} ${error.statusText} | url=${error.url} | body=${JSON.stringify(error.responseBody)}`
+            )
+          } else {
+            logger.error(`Tool: ${tool.name} - failed: ${error instanceof Error ? error.message : String(error)}`)
+          }
           throw toUserError(error, `Tool ${tool.name} failed`)
         }
       },

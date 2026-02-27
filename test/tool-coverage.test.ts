@@ -14,6 +14,7 @@ const EXPECTED_TOOL_NAMES = [
   'msq_delete_model',
   'msq_list_agents',
   'msq_add_agent',
+  'msq_update_agent',
   'msq_delete_agent',
   'msq_generate_prompt',
   'msq_run_agent_workflow',
