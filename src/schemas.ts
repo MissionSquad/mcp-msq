@@ -147,14 +147,32 @@ export const GeneratePromptSchema = z.object({
   modelOptions: z.object({}).passthrough().optional(),
 })
 
-export const AgentWorkflowSchema = z.object({
-  agentName: NonEmptyString,
-  messages: z.array(ChatMessageSchema).min(1),
-  data: z.object({}).passthrough().optional(),
-  delimiter: z.string().optional(),
-  concurrency: z.number().int().positive().optional(),
-  failureMessage: z.string().optional(),
-  failureInstruction: z.string().optional(),
+export const WorkflowIdSchema = z.object({
+  id: NonEmptyString.describe('Workflow config id.'),
+})
+
+export const WorkflowCreateSchema = z.object({
+  id: NonEmptyString.optional().describe('Optional workflow config id. If omitted, the server generates one.'),
+  name: z.string().optional().describe('Workflow name. Defaults to "Untitled Workflow".'),
+  mainAgentId: z.string().nullable().optional().describe('Main agent id for the workflow.'),
+  mainPrompt: z.string().optional().describe('Main prompt containing helper agent patterns.'),
+  dataPayload: z.string().optional().describe('JSON string containing workflow data payload. Must be valid JSON if provided.'),
+  concurrency: z.number().int().positive().optional().describe('Maximum concurrent helper executions.'),
+  delimiter: z.string().optional().describe('Delimiter used for helper patterns. Defaults to "|#|".'),
+  failureMessage: z.string().optional().describe('Failure message used when a helper fails.'),
+  failureInstruction: z.string().optional().describe('Instruction appended for the main agent when a helper fails.'),
+})
+
+export const WorkflowUpdateSchema = WorkflowIdSchema.merge(
+  WorkflowCreateSchema.omit({ id: true }),
+)
+
+export const WorkflowRunIdSchema = z.object({
+  runId: NonEmptyString.describe('Workflow run id.'),
+})
+
+export const WorkflowRunCreateSchema = z.object({
+  workflowId: NonEmptyString.describe('Workflow config id to execute.'),
 })
 
 export const ScrapeUrlSchema = z.object({

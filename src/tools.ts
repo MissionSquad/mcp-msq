@@ -9,7 +9,6 @@ import {
   AddModelSchema,
   AddProviderSchema,
   AddVectorStoreFileSchema,
-  AgentWorkflowSchema,
   CancelVectorStoreSchema,
   ChatCompletionsSchema,
   CoreCollectionDiagnosticsSchema,
@@ -33,6 +32,11 @@ import {
   UploadFileSchema,
   VectorStoreFileSchema,
   VectorStoreIdSchema,
+  WorkflowCreateSchema,
+  WorkflowIdSchema,
+  WorkflowRunCreateSchema,
+  WorkflowRunIdSchema,
+  WorkflowUpdateSchema,
 } from './schemas.js'
 
 type ToolParams = z.ZodTypeAny
@@ -52,6 +56,185 @@ function defineTool<TParams extends ToolParams>(
 
 function encodePathSegment(value: string): string {
   return encodeURIComponent(value)
+}
+
+const TokenUsageSchema = z.object({
+  promptTokens: z.number().optional(),
+  completionTokens: z.number().optional(),
+  totalTokens: z.number().optional(),
+}).nullable()
+
+const WorkflowStatusSchema = z.enum(['queued', 'running', 'completed', 'error', 'cancelled'])
+const WorkflowMainStatusSchema = z.enum(['pending', 'queued', 'running', 'completed', 'error', 'cancelled'])
+
+const WorkflowConfigRecordSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  name: z.string(),
+  mainAgentId: z.string().nullable(),
+  mainPrompt: z.string(),
+  dataPayload: z.string(),
+  concurrency: z.number(),
+  delimiter: z.string(),
+  failureMessage: z.string(),
+  failureInstruction: z.string(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).passthrough()
+
+const WorkflowRunHelperRecordSchema = z.object({
+  helperRunId: z.string(),
+  patternIndex: z.number(),
+  agentId: z.string(),
+  agentName: z.string(),
+  status: WorkflowStatusSchema,
+  startedAt: z.number().optional(),
+  completedAt: z.number().optional(),
+  errorMessage: z.string().optional(),
+  usage: TokenUsageSchema,
+}).passthrough()
+
+const WorkflowRunMainRecordSchema = z.object({
+  agentId: z.string().nullable(),
+  agentName: z.string().nullable(),
+  status: WorkflowMainStatusSchema,
+  startedAt: z.number().optional(),
+  completedAt: z.number().optional(),
+  errorMessage: z.string().optional(),
+  usage: TokenUsageSchema,
+}).passthrough()
+
+const WorkflowRunRecordSchema = z.object({
+  runId: z.string(),
+  workflowConfigId: z.string().nullable(),
+  workflowNameSnapshot: z.string(),
+  status: WorkflowStatusSchema,
+  startedAt: z.number(),
+  completedAt: z.number().optional(),
+  cancelledAt: z.number().optional(),
+  errorMessage: z.string().optional(),
+  aggregateUsage: TokenUsageSchema,
+  helpers: z.array(WorkflowRunHelperRecordSchema),
+  main: WorkflowRunMainRecordSchema,
+  resumeSnapshot: z.object({
+    main: z.object({
+      previewContent: z.string(),
+    }).passthrough(),
+  }).passthrough(),
+}).passthrough()
+
+const WorkflowConfigListResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.array(WorkflowConfigRecordSchema),
+}).passthrough()
+
+const WorkflowConfigResponseSchema = z.object({
+  success: z.boolean(),
+  data: WorkflowConfigRecordSchema,
+}).passthrough()
+
+const WorkflowRunResponseSchema = z.object({
+  success: z.boolean(),
+  runId: z.string().optional(),
+  data: WorkflowRunRecordSchema,
+}).passthrough()
+
+type WorkflowConfigRecord = z.infer<typeof WorkflowConfigRecordSchema>
+type WorkflowRunRecord = z.infer<typeof WorkflowRunRecordSchema>
+
+function parseWorkflowConfigListResponse(payload: unknown): WorkflowConfigRecord[] {
+  return WorkflowConfigListResponseSchema.parse(payload).data
+}
+
+function parseWorkflowConfigResponse(payload: unknown): WorkflowConfigRecord {
+  return WorkflowConfigResponseSchema.parse(payload).data
+}
+
+function parseWorkflowRunResponse(payload: unknown): WorkflowRunRecord {
+  return WorkflowRunResponseSchema.parse(payload).data
+}
+
+function mapWorkflowList(workflows: WorkflowConfigRecord[]) {
+  return { workflows }
+}
+
+function mapWorkflow(workflow: WorkflowConfigRecord) {
+  return { workflow }
+}
+
+function mapWorkflowRunSummary(record: WorkflowRunRecord) {
+  return {
+    runId: record.runId,
+    workflowId: record.workflowConfigId,
+    workflowName: record.workflowNameSnapshot,
+    status: record.status,
+    startedAt: record.startedAt,
+  }
+}
+
+function mapWorkflowRunStatus(record: WorkflowRunRecord) {
+  return {
+    runId: record.runId,
+    workflowId: record.workflowConfigId,
+    workflowName: record.workflowNameSnapshot,
+    status: record.status,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+    cancelledAt: record.cancelledAt,
+    errorMessage: record.errorMessage,
+    aggregateUsage: record.aggregateUsage,
+    main: {
+      agentId: record.main.agentId,
+      agentName: record.main.agentName,
+      status: record.main.status,
+      startedAt: record.main.startedAt,
+      completedAt: record.main.completedAt,
+      errorMessage: record.main.errorMessage,
+      usage: record.main.usage,
+    },
+    helpers: record.helpers.map((helper) => ({
+      helperRunId: helper.helperRunId,
+      patternIndex: helper.patternIndex,
+      agentId: helper.agentId,
+      agentName: helper.agentName,
+      status: helper.status,
+      startedAt: helper.startedAt,
+      completedAt: helper.completedAt,
+      errorMessage: helper.errorMessage,
+      usage: helper.usage,
+    })),
+  }
+}
+
+function mapWorkflowRunResult(record: WorkflowRunRecord) {
+  if (record.status === 'queued' || record.status === 'running') {
+    throw new Error('Workflow result not ready. Use msq_get_workflow_run_status.')
+  }
+
+  if (record.status === 'error' || record.status === 'cancelled') {
+    const suffix = record.errorMessage ? ` ${record.errorMessage}` : ''
+    throw new Error(`Workflow did not complete successfully.${suffix}`)
+  }
+
+  if (record.status !== 'completed' || record.main.status !== 'completed') {
+    throw new Error('Workflow completed without a completed main agent state.')
+  }
+
+  return {
+    runId: record.runId,
+    workflowId: record.workflowConfigId,
+    workflowName: record.workflowNameSnapshot,
+    status: 'completed' as const,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+    result: {
+      agentId: record.main.agentId,
+      agentName: record.main.agentName,
+      content: record.resumeSnapshot.main.previewContent,
+      usage: record.main.usage,
+    },
+    aggregateUsage: record.aggregateUsage,
+  }
 }
 
 const msqTools = [
@@ -239,15 +422,105 @@ const msqTools = [
       }),
   }),
   defineTool({
-    name: 'msq_run_agent_workflow',
-    description: 'Execute a MissionSquad agent workflow.',
-    parameters: AgentWorkflowSchema,
-    run: async (client, args) =>
-      client.requestJson({
+    name: 'msq_list_workflows',
+    description: 'List your MissionSquad workflow configs.',
+    parameters: EmptySchema,
+    run: async (client) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: 'core/workflows',
+      })
+
+      return mapWorkflowList(parseWorkflowConfigListResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_get_workflow',
+    description: 'Get a MissionSquad workflow config by id.',
+    parameters: WorkflowIdSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: 'core/workflows',
+      })
+
+      const workflows = parseWorkflowConfigListResponse(response)
+      const workflow = workflows.find((candidate) => candidate.id === args.id)
+      if (!workflow) {
+        throw new Error('Workflow config not found')
+      }
+
+      return mapWorkflow(workflow)
+    },
+  }),
+  defineTool({
+    name: 'msq_create_workflow',
+    description: 'Create a MissionSquad workflow config.',
+    parameters: WorkflowCreateSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
         method: 'POST',
-        path: 'core/agent-workflow',
+        path: 'core/workflows',
         body: args,
-      }),
+      })
+
+      return mapWorkflow(parseWorkflowConfigResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_update_workflow',
+    description: 'Update a MissionSquad workflow config by id.',
+    parameters: WorkflowUpdateSchema,
+    run: async (client, args) => {
+      const { id, ...body } = args
+      const response = await client.requestJson({
+        method: 'PUT',
+        path: `core/workflows/${encodePathSegment(id)}`,
+        body,
+      })
+
+      return mapWorkflow(parseWorkflowConfigResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_run_workflow',
+    description: 'Start a MissionSquad workflow run in the background.',
+    parameters: WorkflowRunCreateSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: 'core/workflow-runs',
+        body: args,
+      })
+
+      return mapWorkflowRunSummary(parseWorkflowRunResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_get_workflow_run_status',
+    description: 'Get workflow run status including helper success/failure state.',
+    parameters: WorkflowRunIdSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: `core/workflow-runs/${encodePathSegment(args.runId)}`,
+      })
+
+      return mapWorkflowRunStatus(parseWorkflowRunResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_get_workflow_result',
+    description: 'Get the final main-agent result for a completed MissionSquad workflow run.',
+    parameters: WorkflowRunIdSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: `core/workflow-runs/${encodePathSegment(args.runId)}`,
+      })
+
+      return mapWorkflowRunResult(parseWorkflowRunResponse(response))
+    },
   }),
   defineTool({
     name: 'msq_get_core_config',
