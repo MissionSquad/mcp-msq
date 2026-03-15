@@ -106,7 +106,13 @@ If no API key is available, the tool returns a user-facing error.
 ### Core Utilities
 
 - `msq_generate_prompt`
-- `msq_run_agent_workflow`
+- `msq_list_workflows`
+- `msq_get_workflow`
+- `msq_create_workflow`
+- `msq_update_workflow`
+- `msq_run_workflow`
+- `msq_get_workflow_run_status`
+- `msq_get_workflow_result`
 - `msq_get_core_config`
 - `msq_scrape_url`
 - `msq_list_tools`
@@ -142,6 +148,24 @@ If no API key is available, the tool returns a user-facing error.
 
 - `msq_list_user_collections`
 - `msq_get_vector_store_file_details`
+
+## Workflow Lifecycle
+
+Workflow management uses the persisted workflow config and workflow run endpoints rather than the deprecated legacy SSE workflow route.
+
+Supported workflow operations:
+
+- create a workflow config with `msq_create_workflow`
+- update a workflow config with `msq_update_workflow`
+- list workflow configs with `msq_list_workflows`
+- fetch a single workflow config with `msq_get_workflow`
+- start a workflow run with `msq_run_workflow`
+- inspect helper/main status with `msq_get_workflow_run_status`
+- fetch the final main-agent result with `msq_get_workflow_result`
+
+`msq_get_workflow_run_status` returns helper success/failure state without helper content.
+
+`msq_get_workflow_result` returns only the final main-agent response and will fail if the run is still in progress or did not complete successfully.
 
 ## File Upload and Download Notes
 
@@ -207,6 +231,49 @@ All tool handlers return deterministic JSON text strings. Parse text content on 
 await client.callTool('msq_embeddings', {
   model: 'nomic-embed-text-v1.5',
   input: ['First sentence', 'Second sentence'],
+  apiKey: 'msq-...',
+})
+```
+
+### Workflow example
+
+Create a workflow:
+
+```ts
+await client.callTool('msq_create_workflow', {
+  name: 'Research Workflow',
+  mainAgentId: 'agent_main_123',
+  mainPrompt: 'Summarize findings from <collector|#|sourceA> and <collector|#|sourceB>',
+  dataPayload: '{"sourceA":"https://a.example","sourceB":"https://b.example"}',
+  concurrency: 2,
+  delimiter: '|#|',
+  apiKey: 'msq-...',
+})
+```
+
+Start a workflow run:
+
+```ts
+await client.callTool('msq_run_workflow', {
+  workflowId: 'wf_123',
+  apiKey: 'msq-...',
+})
+```
+
+Get workflow status:
+
+```ts
+await client.callTool('msq_get_workflow_run_status', {
+  runId: 'run_abc',
+  apiKey: 'msq-...',
+})
+```
+
+Get the final result:
+
+```ts
+await client.callTool('msq_get_workflow_result', {
+  runId: 'run_abc',
   apiKey: 'msq-...',
 })
 ```
