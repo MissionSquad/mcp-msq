@@ -132,7 +132,7 @@ export const UpdateAgentSchema = z.object({
   timezoneOffset: NonEmptyString.optional().describe('Timezone offset string (e.g. "-05:00") used when addToday is true.'),
   tools: z.array(z.string()).optional().describe('Array of tool function names. Replaces all existing tools.'),
   selectedFunctions: z.record(z.array(z.string())).optional().describe('Map of MCP server name to function names. Replaces existing selectedFunctions.'),
-  temperature: z.number().optional().describe('Temperature for model generation (stored in modelOptions). Use -1 or omit to use model default.'),
+  temperature: z.number().min(0).max(2).optional().describe('Temperature for model generation (0-2). Omit to use model default.'),
   maxTokens: z.number().int().optional().describe('Max output tokens (stored in modelOptions). Use -1 or omit for unlimited/model default.'),
   combineSystemPrompts: z.boolean().optional().describe('Whether to combine system prompts from agent and messages.'),
   convertSystemPrompt: z.boolean().optional().describe('Whether to convert additional system prompts to user messages.'),
