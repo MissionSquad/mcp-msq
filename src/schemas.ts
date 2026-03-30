@@ -184,6 +184,10 @@ export const ScrapeUrlSchema = z.object({
   url: z.string().url(),
 })
 
+export const ServerNameSchema = z.object({
+  serverName: NonEmptyString,
+})
+
 export const CoreCollectionSearchSchema = z.object({
   collectionName: NonEmptyString,
   query: z.string().min(1),
