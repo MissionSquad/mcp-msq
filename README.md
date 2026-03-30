@@ -114,9 +114,12 @@ If no API key is available, the tool returns a user-facing error.
 - `msq_get_workflow_run_status`
 - `msq_get_workflow_result`
 - `msq_get_core_config`
+- `msq_get_core_config_summary`
 - `msq_scrape_url`
 - `msq_list_tools`
+- `msq_list_tool_functions`
 - `msq_list_servers`
+- `msq_list_server_tools`
 
 ### Core Collections
 
@@ -148,6 +151,49 @@ If no API key is available, the tool returns a user-facing error.
 
 - `msq_list_user_collections`
 - `msq_get_vector_store_file_details`
+
+## PTC-Friendly Output Notes
+
+The original MissionSquad tools remain available with their raw API-aligned output shapes:
+
+- `msq_get_core_config`
+- `msq_list_tools`
+
+For programmatic tool calling and other iteration-heavy consumers, use the compact tools instead:
+
+### `msq_get_core_config_summary`
+
+Returns a compact summary with:
+
+- `models`: array of model records
+- `agents`: array of agent summaries
+- `squads`
+- `missions`
+- `embeddingModels`
+- `embeddedCollections`
+- `voices`
+- `counts`
+
+This tool is intended for iteration and discovery, not for retrieving the full raw config payload.
+
+### `msq_list_tool_functions`
+
+Returns a compact summary with:
+
+- `tools`: flat array of tool functions with `serverName`, `name`, and `description`
+- `serverNames`
+- `counts`
+
+This tool is intended for discovery and agent/tool selection workflows.
+
+### `msq_list_server_tools`
+
+Returns the raw tool inventory for a single MCP server:
+
+- input: `serverName`
+- output: the same tool list structure returned by MissionSquad for that server only
+
+Use this after `msq_list_servers` when you need detailed tool schemas for a specific server without loading the full global inventory.
 
 ## Workflow Lifecycle
 
@@ -190,6 +236,8 @@ If response content exceeds `maxBytes` (or `MSQ_DEFAULT_FILE_CONTENT_MAX_BYTES`)
 ## Response Format
 
 All tool handlers return deterministic JSON text strings. Parse text content on the client side if structured access is needed.
+
+When a compact summary tool is used, the MCP output contract documented in this README is the authoritative interface for tool callers.
 
 ## Usage Examples
 

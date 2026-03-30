@@ -27,6 +27,7 @@ import {
   GeneratePromptSchema,
   ScheduledRunIdSchema,
   ScrapeUrlSchema,
+  ServerNameSchema,
   UpdateAgentSchema,
   UpdateScheduledRunSchema,
   UploadFileSchema,
@@ -234,6 +235,111 @@ function mapWorkflowRunResult(record: WorkflowRunRecord) {
       usage: record.main.usage,
     },
     aggregateUsage: record.aggregateUsage,
+  }
+}
+
+type UnknownRecord = Record<string, unknown>
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function entriesToArray(value: unknown): unknown[] {
+  if (!isRecord(value)) {
+    return []
+  }
+
+  return Object.entries(value).map(([id, item]) =>
+    isRecord(item)
+      ? { id, ...item }
+      : { id, value: item },
+  )
+}
+
+export function summarizeCoreConfig(payload: unknown): unknown {
+  if (!isRecord(payload)) {
+    return payload
+  }
+
+  const modelsById = isRecord(payload.models) ? payload.models : {}
+  const agentsById = isRecord(payload.agents) ? payload.agents : {}
+  const squadsById = isRecord(payload.squads) ? payload.squads : {}
+  const missionsById = isRecord(payload.missions) ? payload.missions : {}
+  const embeddingModelsById = isRecord(payload.embeddingModels) ? payload.embeddingModels : {}
+  const embeddedCollectionsById = isRecord(payload.embeddedCollections) ? payload.embeddedCollections : {}
+  const voicesById = isRecord(payload.voices) ? payload.voices : {}
+
+  return {
+    models: entriesToArray(modelsById),
+    agents: entriesToArray(agentsById).map((agent) =>
+      isRecord(agent)
+        ? {
+            id: agent.id,
+            name: agent.name,
+            description: agent.description,
+            model: agent.model,
+          }
+        : agent,
+    ),
+    squads: entriesToArray(squadsById),
+    missions: entriesToArray(missionsById),
+    embeddingModels: entriesToArray(embeddingModelsById),
+    embeddedCollections: entriesToArray(embeddedCollectionsById),
+    voices: entriesToArray(voicesById),
+    counts: {
+      models: Object.keys(modelsById).length,
+      agents: Object.keys(agentsById).length,
+      squads: Object.keys(squadsById).length,
+      missions: Object.keys(missionsById).length,
+      embeddingModels: Object.keys(embeddingModelsById).length,
+      embeddedCollections: Object.keys(embeddedCollectionsById).length,
+      voices: Object.keys(voicesById).length,
+    },
+  }
+}
+
+export function summarizeToolInventories(payload: unknown): unknown {
+  if (!isRecord(payload)) {
+    return payload
+  }
+
+  const rawTools = Array.isArray(payload.tools) ? payload.tools : []
+  const groupedTools = rawTools
+    .filter(isRecord)
+    .flatMap((serverGroup) =>
+      Object.entries(serverGroup).map(([serverName, tools]) => ({
+        serverName,
+        tools: Array.isArray(tools) ? tools : [],
+      })),
+    )
+
+  const flattenedTools = groupedTools.flatMap(({ serverName, tools }) =>
+    tools.map((tool) =>
+      isRecord(tool)
+        ? { serverName, ...tool }
+        : { serverName, value: tool },
+    ),
+  )
+
+  return {
+    success: payload.success ?? true,
+    tools: flattenedTools.map((tool) => {
+      const toolRecord = tool as Record<string, unknown>
+      const serverName = typeof toolRecord.serverName === 'string' ? toolRecord.serverName : 'unknown'
+      const name = typeof toolRecord.name === 'string' ? toolRecord.name : String(toolRecord.value ?? '')
+      const description = typeof toolRecord.description === 'string' ? toolRecord.description : undefined
+
+      return {
+        serverName,
+        name,
+        ...(description !== undefined ? { description } : {}),
+      }
+    }),
+    serverNames: groupedTools.map((group) => group.serverName),
+    counts: {
+      servers: groupedTools.length,
+      tools: flattenedTools.length,
+    },
   }
 }
 
@@ -524,13 +630,27 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_get_core_config',
-    description: 'Get MissionSquad core config (models, agents, embeddings, collections).',
+    description:
+      'Get MissionSquad core config (models, agents, embeddings, collections). '
+      + 'Returns the raw MissionSquad API response shape.',
     parameters: EmptySchema,
     run: async (client) =>
       client.requestJson({
         method: 'GET',
         path: 'core/config',
       }),
+  }),
+  defineTool({
+    name: 'msq_get_core_config_summary',
+    description:
+      'Get a compact, list-friendly summary of MissionSquad core config for programmatic consumers. '
+      + 'Returns iterable arrays for models, agents, embeddings, collections, and voices plus top-level counts.',
+    parameters: EmptySchema,
+    run: async (client) =>
+      summarizeCoreConfig(await client.requestJson({
+        method: 'GET',
+        path: 'core/config',
+      })),
   }),
   defineTool({
     name: 'msq_scrape_url',
@@ -545,13 +665,25 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_list_tools',
-    description: 'List MissionSquad MCP tool inventories available to agents.',
+    description: 'List MissionSquad MCP tool inventories available to agents. Returns the raw MissionSquad API response shape.',
     parameters: EmptySchema,
     run: async (client) =>
       client.requestJson({
         method: 'GET',
         path: 'core/tools',
       }),
+  }),
+  defineTool({
+    name: 'msq_list_tool_functions',
+    description:
+      'List MissionSquad MCP tool functions in a compact, flat, list-friendly shape for programmatic consumers. '
+      + 'Each result includes `serverName`, `name`, and `description`.',
+    parameters: EmptySchema,
+    run: async (client) =>
+      summarizeToolInventories(await client.requestJson({
+        method: 'GET',
+        path: 'core/tools',
+      })),
   }),
   defineTool({
     name: 'msq_list_servers',
@@ -561,6 +693,18 @@ const msqTools = [
       client.requestJson({
         method: 'GET',
         path: 'core/servers',
+      }),
+  }),
+  defineTool({
+    name: 'msq_list_server_tools',
+    description:
+      'List the tools for one MissionSquad MCP server only. '
+      + 'Use this after msq_list_servers to inspect specific servers without loading the full global tool inventory.',
+    parameters: ServerNameSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'GET',
+        path: `mcp/servers/${encodePathSegment(args.serverName)}/tools`,
       }),
   }),
   defineTool({
