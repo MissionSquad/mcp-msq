@@ -12,6 +12,7 @@ This server exposes MissionSquad account-scoped operations for models, agents, p
 - Strict TypeScript and Zod-validated tool inputs
 - Multipart file upload support (`POST /v1/files`)
 - Bounded binary file-content retrieval (`GET /v1/files/:id/content`) with truncation metadata
+- Compact MCP server discovery output for installed/enabled servers only
 - Build/test CI and npm publish workflow
 
 ## Verified API Coverage
@@ -185,6 +186,14 @@ Returns a compact summary with:
 - `counts`
 
 This tool is intended for discovery and agent/tool selection workflows.
+
+### `msq_list_servers`
+
+Returns a compact server list for discovery workflows:
+
+- `servers`: array of records with only `name`, `displayName`, `transportType`, and `description`
+
+This tool filters out servers that are not installed or not enabled.
 
 ### `msq_list_server_tools`
 

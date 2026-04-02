@@ -206,6 +206,88 @@ describe('MissionSquad workflow tools', () => {
     expect(result).toEqual({ workflows })
   })
 
+  it('lists installed and enabled servers in a compact shape', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      servers: [
+        {
+          name: 'weather-server',
+          displayName: 'Weather Server',
+          transportType: 'stdio',
+          description: 'Weather tools',
+          installed: true,
+          enabled: true,
+          command: 'node',
+          args: ['server.js'],
+          env: { NODE_ENV: 'production' },
+        },
+        {
+          name: 'disabled-server',
+          displayName: 'Disabled Server',
+          transportType: 'streamable_http',
+          description: 'Should be omitted',
+          installed: true,
+          enabled: false,
+        },
+      ],
+    }))
+
+    const result = await callTool('msq_list_servers', {})
+    const { url, init } = getRequest(fetchMock)
+
+    expect(url.pathname).toBe('/v1/core/servers')
+    expect(init.method).toBe('GET')
+    expect(result).toEqual({
+      servers: [
+        {
+          name: 'weather-server',
+          displayName: 'Weather Server',
+          transportType: 'stdio',
+          description: 'Weather tools',
+        },
+      ],
+    })
+  })
+
+  it('lists tools for a single server using the per-server MCP route', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      tools: [
+        {
+          name: 'weather',
+          description: 'Get weather information',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              location: { type: 'string' },
+            },
+          },
+        },
+      ],
+    }))
+
+    const result = await callTool('msq_list_server_tools', { serverName: 'weather-server' })
+    const { url, init } = getRequest(fetchMock)
+
+    expect(url.pathname).toBe('/v1/mcp/servers/weather-server/tools')
+    expect(init.method).toBe('GET')
+    expect(result).toEqual({
+      success: true,
+      tools: [
+        {
+          name: 'weather',
+          description: 'Get weather information',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              location: { type: 'string' },
+            },
+          },
+        },
+      ],
+    })
+  })
+
   it('gets a workflow by exact id match and errors when missing', async () => {
     const workflows = [buildWorkflowConfig('wf-1'), buildWorkflowConfig('wf-2')]
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: workflows }))
