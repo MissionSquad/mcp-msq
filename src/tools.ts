@@ -89,9 +89,9 @@ const WorkflowRunHelperRecordSchema = z.object({
   agentId: z.string(),
   agentName: z.string(),
   status: WorkflowStatusSchema,
-  startedAt: z.number().optional(),
-  completedAt: z.number().optional(),
-  errorMessage: z.string().optional(),
+  startedAt: z.number().nullish(),
+  completedAt: z.number().nullish(),
+  errorMessage: z.string().nullish(),
   usage: TokenUsageSchema,
 }).passthrough()
 
@@ -99,9 +99,9 @@ const WorkflowRunMainRecordSchema = z.object({
   agentId: z.string().nullable(),
   agentName: z.string().nullable(),
   status: WorkflowMainStatusSchema,
-  startedAt: z.number().optional(),
-  completedAt: z.number().optional(),
-  errorMessage: z.string().optional(),
+  startedAt: z.number().nullish(),
+  completedAt: z.number().nullish(),
+  errorMessage: z.string().nullish(),
   usage: TokenUsageSchema,
 }).passthrough()
 
@@ -111,9 +111,9 @@ const WorkflowRunRecordSchema = z.object({
   workflowNameSnapshot: z.string(),
   status: WorkflowStatusSchema,
   startedAt: z.number(),
-  completedAt: z.number().optional(),
-  cancelledAt: z.number().optional(),
-  errorMessage: z.string().optional(),
+  completedAt: z.number().nullish(),
+  cancelledAt: z.number().nullish(),
+  errorMessage: z.string().nullish(),
   aggregateUsage: TokenUsageSchema,
   helpers: z.array(WorkflowRunHelperRecordSchema),
   main: WorkflowRunMainRecordSchema,

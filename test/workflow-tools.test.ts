@@ -65,9 +65,9 @@ function buildWorkflowRunRecord(
     workflowNameSnapshot: 'Research Workflow',
     status,
     startedAt: 1000,
-    completedAt: status === 'completed' || status === 'error' || status === 'cancelled' ? 2000 : undefined,
-    cancelledAt: status === 'cancelled' ? 2000 : undefined,
-    errorMessage: status === 'error' ? 'main failed' : status === 'cancelled' ? 'user_cancelled' : undefined,
+    completedAt: status === 'completed' || status === 'error' || status === 'cancelled' ? 2000 : null,
+    cancelledAt: status === 'cancelled' ? 2000 : null,
+    errorMessage: status === 'error' ? 'main failed' : status === 'cancelled' ? 'user_cancelled' : null,
     aggregateUsage: {
       promptTokens: 10,
       completionTokens: 20,
@@ -101,8 +101,8 @@ function buildWorkflowRunRecord(
       agentSlug: 'coordinator',
       status: mainStatus,
       startedAt: 1300,
-      completedAt: mainStatus === 'completed' || mainStatus === 'error' || mainStatus === 'cancelled' ? 2000 : undefined,
-      errorMessage: mainStatus === 'error' ? 'main failed' : undefined,
+      completedAt: mainStatus === 'completed' || mainStatus === 'error' || mainStatus === 'cancelled' ? 2000 : null,
+      errorMessage: mainStatus === 'error' ? 'main failed' : null,
       usage: {
         promptTokens: 4,
         completionTokens: 5,
@@ -358,6 +358,31 @@ describe('MissionSquad workflow tools', () => {
     expect(url.pathname).toBe('/v1/core/workflow-runs')
     expect(init.method).toBe('POST')
     expect(JSON.parse(String(init.body))).toEqual({ workflowId: 'wf-123' })
+    expect(result).toEqual({
+      runId: 'run-123',
+      workflowId: 'wf-123',
+      workflowName: 'Research Workflow',
+      status: 'queued',
+      startedAt: 1000,
+    })
+  })
+
+  it('passes an optional per-run dataPayload override without mutating the request shape', async () => {
+    const record = buildWorkflowRunRecord('queued', 'pending')
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, runId: 'run-123', data: record }, 202))
+
+    const result = await callTool('msq_run_workflow', {
+      workflowId: 'wf-123',
+      dataPayload: '{"attachmentUrl":"https://example.com/file.docx"}',
+    })
+    const { url, init } = getRequest(fetchMock)
+
+    expect(url.pathname).toBe('/v1/core/workflow-runs')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(String(init.body))).toEqual({
+      workflowId: 'wf-123',
+      dataPayload: '{"attachmentUrl":"https://example.com/file.docx"}',
+    })
     expect(result).toEqual({
       runId: 'run-123',
       workflowId: 'wf-123',
