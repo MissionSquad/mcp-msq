@@ -343,6 +343,39 @@ export function summarizeToolInventories(payload: unknown): unknown {
   }
 }
 
+type ServerInventorySummary = {
+  name: string
+  displayName: string
+  transportType: string
+  description: string
+}
+
+export function summarizeServerInventories(payload: unknown): unknown {
+  if (!isRecord(payload)) {
+    return payload
+  }
+
+  const rawServers = Array.isArray(payload.servers) ? payload.servers : []
+
+  const servers: ServerInventorySummary[] = rawServers
+    .filter(isRecord)
+    .filter((server) => server.installed === true && server.enabled === true)
+    .map((server) => ({
+      name: typeof server.name === 'string' ? server.name : '',
+      displayName:
+        typeof server.displayName === 'string' && server.displayName.trim().length > 0
+          ? server.displayName
+          : typeof server.name === 'string'
+            ? server.name
+            : '',
+      transportType: typeof server.transportType === 'string' ? server.transportType : 'unknown',
+      description: typeof server.description === 'string' ? server.description : '',
+    }))
+    .filter((server) => server.name.length > 0)
+
+  return { servers }
+}
+
 const msqTools = [
   defineTool({
     name: 'msq_list_models',
@@ -687,13 +720,15 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_list_servers',
-    description: 'List MissionSquad MCP server inventory and status.',
+    description:
+      'List installed and enabled MissionSquad MCP servers in a compact discovery-friendly shape. '
+      + 'Each result includes only `name`, `displayName`, `transportType`, and `description`.',
     parameters: EmptySchema,
     run: async (client) =>
-      client.requestJson({
+      summarizeServerInventories(await client.requestJson({
         method: 'GET',
         path: 'core/servers',
-      }),
+      })),
   }),
   defineTool({
     name: 'msq_list_server_tools',

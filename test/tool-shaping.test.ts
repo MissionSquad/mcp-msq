@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { summarizeCoreConfig, summarizeToolInventories } from '../src/tools.js'
+import { summarizeCoreConfig, summarizeServerInventories, summarizeToolInventories } from '../src/tools.js'
 
 describe('MissionSquad MCP tool shaping', () => {
   it('summarizes core config maps into compact list-friendly arrays', () => {
@@ -63,5 +63,53 @@ describe('MissionSquad MCP tool shaping', () => {
     ])
     expect(shaped.serverNames).toEqual(['webtools', 'missionsquad'])
     expect(shaped.counts).toEqual({ servers: 2, tools: 3 })
+  })
+
+  it('summarizes server inventories into a compact filtered list', () => {
+    const input = {
+      success: true,
+      servers: [
+        {
+          name: 'weather-server',
+          displayName: 'Weather Server',
+          transportType: 'stdio',
+          description: 'Weather tools',
+          installed: true,
+          enabled: true,
+          command: 'node',
+          args: ['server.js'],
+          env: { NODE_ENV: 'production' },
+        },
+        {
+          name: 'disabled-server',
+          displayName: 'Disabled Server',
+          transportType: 'streamable_http',
+          description: 'Should be omitted',
+          installed: true,
+          enabled: false,
+        },
+        {
+          name: 'uninstalled-server',
+          displayName: 'Uninstalled Server',
+          transportType: 'streamable_http',
+          description: 'Should be omitted',
+          installed: false,
+          enabled: true,
+        },
+      ],
+    }
+
+    const shaped = summarizeServerInventories(input) as Record<string, unknown>
+
+    expect(shaped).toEqual({
+      servers: [
+        {
+          name: 'weather-server',
+          displayName: 'Weather Server',
+          transportType: 'stdio',
+          description: 'Weather tools',
+        },
+      ],
+    })
   })
 })
