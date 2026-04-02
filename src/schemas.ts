@@ -178,6 +178,10 @@ export const WorkflowRunIdSchema = z.object({
 
 export const WorkflowRunCreateSchema = z.object({
   workflowId: NonEmptyString.describe('Workflow config id to execute.'),
+  dataPayload: z.string().optional().describe(
+    'Optional JSON string to use as the workflow data payload for this run only. '
+    + 'This overrides the saved workflow config dataPayload without mutating the workflow.'
+  ),
 })
 
 export const ScrapeUrlSchema = z.object({

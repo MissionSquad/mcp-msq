@@ -218,6 +218,13 @@ Supported workflow operations:
 - inspect helper/main status with `msq_get_workflow_run_status`
 - fetch the final main-agent result with `msq_get_workflow_result`
 
+`msq_run_workflow` accepts:
+
+- `workflowId` (required)
+- `dataPayload` (optional JSON string override for this run only)
+
+When `dataPayload` is provided to `msq_run_workflow`, it overrides the saved workflow config payload for that execution without modifying the workflow config itself.
+
 `msq_get_workflow_run_status` returns helper success/failure state without helper content.
 
 `msq_get_workflow_result` returns only the final main-agent response and will fail if the run is still in progress or did not complete successfully.
