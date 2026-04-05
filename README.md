@@ -225,7 +225,7 @@ Supported workflow operations:
 
 When `dataPayload` is provided to `msq_run_workflow`, it overrides the saved workflow config payload for that execution without modifying the workflow config itself.
 
-`msq_get_workflow_run_status` returns helper success/failure state without helper content.
+`msq_get_workflow_run_status` returns helper success/failure state without helper content. For queued or running workflow runs, it waits on the MissionSquad workflow SSE stream and returns once the run reaches a terminal state.
 
 `msq_get_workflow_result` returns only the final main-agent response and will fail if the run is still in progress or did not complete successfully.
 

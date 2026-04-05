@@ -8,7 +8,7 @@ dotenv.config()
 
 const DEFAULT_BASE_URL = 'https://agents.missionsquad.ai/v1'
 const EXPECTED_BASE_PATH_SUFFIX = '/v1'
-export const DEFAULT_HTTP_TIMEOUT_MS = 30_000
+export const DEFAULT_HTTP_TIMEOUT_MS = 120_000
 export const DEFAULT_FILE_CONTENT_MAX_BYTES = 1_048_576
 
 const EnvSchema = z.object({
