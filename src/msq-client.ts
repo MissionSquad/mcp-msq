@@ -13,6 +13,12 @@ interface JsonRequestOptions {
   headers?: Record<string, string | undefined>
 }
 
+interface EventStreamRequestOptions {
+  path: string
+  query?: Record<string, string | number | boolean | undefined>
+  headers?: Record<string, string | undefined>
+}
+
 interface FileUploadOptions {
   filePath: string
   purpose: string
@@ -38,6 +44,12 @@ interface LimitedBufferResult {
   buffer: Buffer
   bytesRead: number
   truncated: boolean
+}
+
+interface ServerSentEvent {
+  event?: string
+  id?: string
+  data: string
 }
 
 function parseContentLength(rawHeader: string | null): number | null {
@@ -108,6 +120,44 @@ async function readResponseBodyWithLimit(
   }
 }
 
+function parseServerSentEvent(rawEvent: string): ServerSentEvent | null {
+  const lines = rawEvent.split(/\r?\n/)
+  const dataLines: string[] = []
+  let event: string | undefined
+  let id: string | undefined
+
+  for (const line of lines) {
+    if (line.length === 0 || line.startsWith(':')) {
+      continue
+    }
+
+    const separatorIndex = line.indexOf(':')
+    const field = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line
+    let value = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : ''
+    if (value.startsWith(' ')) {
+      value = value.slice(1)
+    }
+
+    if (field === 'data') {
+      dataLines.push(value)
+    } else if (field === 'event') {
+      event = value
+    } else if (field === 'id') {
+      id = value
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return null
+  }
+
+  return {
+    event,
+    id,
+    data: dataLines.join('\n'),
+  }
+}
+
 export class MissionSquadClient {
   constructor(private readonly requestConfig: ResolvedRequestConfig) {}
 
@@ -132,6 +182,76 @@ export class MissionSquadClient {
     })
 
     return this.parseStructuredResponse(response, url)
+  }
+
+  public async consumeServerSentEvents(
+    options: EventStreamRequestOptions,
+    onEvent: (event: ServerSentEvent) => Promise<void> | void,
+  ): Promise<void> {
+    const url = this.buildUrl(options.path, options.query)
+
+    const response = await this.fetchWithoutTimeout(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/event-stream',
+        'x-api-key': this.requestConfig.apiKey,
+        ...this.compactHeaders(options.headers),
+      },
+    })
+
+    if (!response.ok) {
+      const errorPayload = await this.parseErrorPayload(response)
+      throw new MsqApiError(
+        `MissionSquad API request failed with ${response.status} ${response.statusText}.`,
+        response.status,
+        response.statusText,
+        url,
+        errorPayload,
+      )
+    }
+
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.includes('text/event-stream')) {
+      throw new MsqTransportError(
+        `MissionSquad API event stream returned unexpected content type: ${contentType || 'unknown'}.`,
+      )
+    }
+
+    if (!response.body) {
+      throw new MsqTransportError('MissionSquad API event stream did not include a response body.')
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+
+      while (true) {
+        const separatorMatch = /\r?\n\r?\n/.exec(buffer)
+        if (!separatorMatch || separatorMatch.index === undefined) {
+          break
+        }
+
+        const rawEvent = buffer.slice(0, separatorMatch.index)
+        buffer = buffer.slice(separatorMatch.index + separatorMatch[0].length)
+
+        const parsed = parseServerSentEvent(rawEvent)
+        if (parsed) {
+          await onEvent(parsed)
+        }
+      }
+
+      if (done) {
+        const parsed = parseServerSentEvent(buffer)
+        if (parsed) {
+          await onEvent(parsed)
+        }
+        return
+      }
+    }
   }
 
   public async uploadFile(options: FileUploadOptions): Promise<unknown> {
@@ -260,6 +380,14 @@ export class MissionSquadClient {
       throw new MsqTransportError('MissionSquad API request failed before receiving a response.', error)
     } finally {
       clearTimeout(timeoutId)
+    }
+  }
+
+  private async fetchWithoutTimeout(url: string, init: RequestInit): Promise<Response> {
+    try {
+      return await fetch(url, init)
+    } catch (error) {
+      throw new MsqTransportError('MissionSquad API request failed before receiving a response.', error)
     }
   }
 

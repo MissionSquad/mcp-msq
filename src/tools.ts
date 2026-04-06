@@ -173,6 +173,56 @@ function mapWorkflowRunSummary(record: WorkflowRunRecord) {
   }
 }
 
+function isWorkflowRunTerminalStatus(status: z.infer<typeof WorkflowStatusSchema>): boolean {
+  return status === 'completed' || status === 'error' || status === 'cancelled'
+}
+
+async function fetchWorkflowRunRecord(
+  client: MissionSquadClient,
+  runId: string,
+): Promise<WorkflowRunRecord> {
+  const response = await client.requestJson({
+    method: 'GET',
+    path: `core/workflow-runs/${encodePathSegment(runId)}`,
+  })
+
+  return parseWorkflowRunResponse(response)
+}
+
+async function waitForWorkflowRunRecord(
+  client: MissionSquadClient,
+  runId: string,
+): Promise<WorkflowRunRecord> {
+  const initialRecord = await fetchWorkflowRunRecord(client, runId)
+  if (isWorkflowRunTerminalStatus(initialRecord.status)) {
+    return initialRecord
+  }
+
+  let sawDone = false
+
+  await client.consumeServerSentEvents(
+    {
+      path: `core/workflow-runs/${encodePathSegment(runId)}/stream`,
+    },
+    (event) => {
+      if (event.data === '[DONE]') {
+        sawDone = true
+      }
+    },
+  )
+
+  const latestRecord = await fetchWorkflowRunRecord(client, runId)
+  if (isWorkflowRunTerminalStatus(latestRecord.status)) {
+    return latestRecord
+  }
+
+  if (!sawDone) {
+    throw new Error('Workflow is still running. Stream ended before completion. Use msq_get_workflow_run_status again.')
+  }
+
+  throw new Error('Workflow is still running. Use msq_get_workflow_run_status again.')
+}
+
 function mapWorkflowRunStatus(record: WorkflowRunRecord) {
   return {
     runId: record.runId,
@@ -637,15 +687,10 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_get_workflow_run_status',
-    description: 'Get workflow run status including helper success/failure state.',
+    description: 'Get workflow run status including helper success/failure state. Waits for in-progress runs to reach a terminal state when the API stream is available.',
     parameters: WorkflowRunIdSchema,
     run: async (client, args) => {
-      const response = await client.requestJson({
-        method: 'GET',
-        path: `core/workflow-runs/${encodePathSegment(args.runId)}`,
-      })
-
-      return mapWorkflowRunStatus(parseWorkflowRunResponse(response))
+      return mapWorkflowRunStatus(await waitForWorkflowRunRecord(client, args.runId))
     },
   }),
   defineTool({
