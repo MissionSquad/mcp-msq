@@ -193,34 +193,33 @@ async function waitForWorkflowRunRecord(
   client: MissionSquadClient,
   runId: string,
 ): Promise<WorkflowRunRecord> {
-  const initialRecord = await fetchWorkflowRunRecord(client, runId)
-  if (isWorkflowRunTerminalStatus(initialRecord.status)) {
-    return initialRecord
+  let latestRecord = await fetchWorkflowRunRecord(client, runId)
+
+  while (!isWorkflowRunTerminalStatus(latestRecord.status)) {
+    let sawDone = false
+
+    await client.consumeServerSentEvents(
+      {
+        path: `core/workflow-runs/${encodePathSegment(runId)}/stream`,
+      },
+      (event) => {
+        if (event.data === '[DONE]') {
+          sawDone = true
+        }
+      },
+    )
+
+    latestRecord = await fetchWorkflowRunRecord(client, runId)
+    if (isWorkflowRunTerminalStatus(latestRecord.status)) {
+      return latestRecord
+    }
+
+    if (sawDone) {
+      throw new Error('Workflow is still running. Use msq_get_workflow_run_status again.')
+    }
   }
 
-  let sawDone = false
-
-  await client.consumeServerSentEvents(
-    {
-      path: `core/workflow-runs/${encodePathSegment(runId)}/stream`,
-    },
-    (event) => {
-      if (event.data === '[DONE]') {
-        sawDone = true
-      }
-    },
-  )
-
-  const latestRecord = await fetchWorkflowRunRecord(client, runId)
-  if (isWorkflowRunTerminalStatus(latestRecord.status)) {
-    return latestRecord
-  }
-
-  if (!sawDone) {
-    throw new Error('Workflow is still running. Stream ended before completion. Use msq_get_workflow_run_status again.')
-  }
-
-  throw new Error('Workflow is still running. Use msq_get_workflow_run_status again.')
+  return latestRecord
 }
 
 function mapWorkflowRunStatus(record: WorkflowRunRecord) {

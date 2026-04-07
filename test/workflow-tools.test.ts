@@ -477,17 +477,30 @@ describe('MissionSquad workflow tools', () => {
     })
   })
 
-  it('tells the caller to check again if the workflow stream ends before completion', async () => {
+  it('reconnects when the workflow stream closes before completion and keeps waiting', async () => {
     const runningRecord = buildWorkflowRunRecord('running', 'running')
+    const completedRecord = buildWorkflowRunRecord('completed', 'completed')
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: runningRecord }))
     fetchMock.mockResolvedValueOnce(sseResponse([
-      `data: ${JSON.stringify({ type: 'snapshot', record: runningRecord })}\n\n`,
+      ':workflow-heartbeat 1\n\n',
     ]))
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: runningRecord }))
+    fetchMock.mockResolvedValueOnce(sseResponse([
+      ':workflow-heartbeat 2\n\n',
+      `data: ${JSON.stringify({ type: 'workflow_completed', runId: 'run-123', status: 'completed' })}\n\n`,
+      'data: [DONE]\n\n',
+    ]))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: completedRecord }))
 
-    await expect(callTool('msq_get_workflow_run_status', { runId: 'run-123' })).rejects.toThrow(
-      'Workflow is still running. Stream ended before completion. Use msq_get_workflow_run_status again.',
-    )
+    const result = await callTool('msq_get_workflow_run_status', { runId: 'run-123' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(getRequestAt(fetchMock, 1).url.pathname).toBe('/v1/core/workflow-runs/run-123/stream')
+    expect(getRequestAt(fetchMock, 3).url.pathname).toBe('/v1/core/workflow-runs/run-123/stream')
+    expect(result).toMatchObject({
+      runId: 'run-123',
+      status: 'completed',
+    })
   })
 
   it('returns only the main-agent result for a completed run', async () => {
