@@ -36,6 +36,38 @@ describe('MissionSquad MCP tool shaping', () => {
     })
   })
 
+  it('redacts apiKey/token-shaped fields across all summarized sub-trees', () => {
+    const longKey = 'sk-proj-EhgYhIv8B7KiW_5FLABCDEFGHIJKLMNOPQR'
+    const jwt =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9.signaturekuj4'
+
+    const input = {
+      models: {
+        m1: { name: 'M1', apiKey: longKey, providerKey: 'openai' },
+      },
+      embeddingModels: {
+        em1: { name: 'EM1', apiKey: longKey, modelName: 'text-embedding-3' },
+      },
+      embeddedCollections: {
+        c1: { name: 'C1', apiKey: jwt, model: 'text-embedding-3' },
+        c2: { name: 'C2', token: longKey },
+      },
+      agents: {},
+      voices: {},
+    }
+
+    const shaped = summarizeCoreConfig(input) as Record<string, unknown>
+
+    const flatten = (arr: unknown): string =>
+      JSON.stringify(arr ?? [])
+
+    expect(flatten(shaped.models)).not.toContain(longKey)
+    expect(flatten(shaped.embeddingModels)).not.toContain(longKey)
+    expect(flatten(shaped.embeddedCollections)).not.toContain(longKey)
+    expect(flatten(shaped.embeddedCollections)).not.toContain(jwt)
+    expect(flatten(shaped.embeddedCollections)).toContain('eyJ...kuj4')
+  })
+
   it('summarizes grouped tool inventories into a compact flat list', () => {
     const input = {
       success: true,
