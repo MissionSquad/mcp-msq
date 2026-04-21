@@ -174,6 +174,45 @@ function buildWorkflowRunRecord(
   }
 }
 
+function buildWorkflowRunHydratedRecord(
+  record: ReturnType<typeof buildWorkflowRunRecord>,
+  options?: {
+    mainAssistantContent?: string
+    includeMainChat?: boolean
+    includeMainAssistant?: boolean
+  },
+) {
+  const includeMainChat = options?.includeMainChat ?? true
+  const includeMainAssistant = options?.includeMainAssistant ?? true
+  const mainAssistantContent = options?.mainAssistantContent ?? record.resumeSnapshot.main.previewContent
+
+  return {
+    record,
+    mainChat: includeMainChat
+      ? {
+          id: record.main.chatId,
+          agentSlug: record.main.agentSlug,
+          messages: includeMainAssistant
+            ? [
+                { role: 'user', content: 'workflow input' },
+                {
+                  role: 'assistant',
+                  content: mainAssistantContent,
+                  tokenUsage: record.main.usage,
+                },
+              ]
+            : [
+                { role: 'user', content: 'workflow input' },
+              ],
+        }
+      : null,
+    helperChats: record.helpers.map((helper) => ({
+      helperRunId: helper.helperRunId,
+      chat: null,
+    })),
+  }
+}
+
 function getRequest(fetchMock: ReturnType<typeof vi.fn>) {
   return getRequestAt(fetchMock, fetchMock.mock.calls.length - 1)
 }
@@ -416,16 +455,19 @@ describe('MissionSquad workflow tools', () => {
 
   it('returns filtered workflow run status without helper or main content fields for terminal runs', async () => {
     const record = buildWorkflowRunRecord('completed', 'completed')
+    const hydrated = buildWorkflowRunHydratedRecord(record)
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: record }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: hydrated }))
 
     const result = await callTool('msq_get_workflow_run_status', { runId: 'run-123' })
-    const { url, init } = getRequest(fetchMock)
+    const { url, init } = getRequestAt(fetchMock, 0)
     const statusResult = result as Record<string, unknown>
     const helpers = statusResult.helpers as Array<Record<string, unknown>>
     const main = statusResult.main as Record<string, unknown>
 
     expect(url.pathname).toBe('/v1/core/workflow-runs/run-123')
     expect(init.method).toBe('GET')
+    expect(getRequestAt(fetchMock, 1).url.pathname).toBe('/v1/core/workflow-runs/run-123/hydrated')
     expect(statusResult).toMatchObject({
       runId: 'run-123',
       workflowId: 'wf-123',
@@ -448,6 +490,7 @@ describe('MissionSquad workflow tools', () => {
   it('waits for a running workflow to finish via the workflow SSE endpoint before returning status', async () => {
     const runningRecord = buildWorkflowRunRecord('running', 'running')
     const completedRecord = buildWorkflowRunRecord('completed', 'completed')
+    const hydrated = buildWorkflowRunHydratedRecord(completedRecord)
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: runningRecord }))
     fetchMock.mockResolvedValueOnce(sseResponse([
       `data: ${JSON.stringify({ type: 'snapshot', record: runningRecord })}\n\n`,
@@ -455,11 +498,13 @@ describe('MissionSquad workflow tools', () => {
       'data: [DONE]\n\n',
     ]))
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: completedRecord }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: hydrated }))
 
     const result = await callTool('msq_get_workflow_run_status', { runId: 'run-123' })
     const firstRequest = getRequestAt(fetchMock, 0)
     const streamRequest = getRequestAt(fetchMock, 1)
     const finalRequest = getRequestAt(fetchMock, 2)
+    const hydratedRequest = getRequestAt(fetchMock, 3)
 
     expect(firstRequest.url.pathname).toBe('/v1/core/workflow-runs/run-123')
     expect(firstRequest.init.method).toBe('GET')
@@ -468,6 +513,8 @@ describe('MissionSquad workflow tools', () => {
     expect((streamRequest.init.headers as Record<string, string>).Accept).toBe('text/event-stream')
     expect(finalRequest.url.pathname).toBe('/v1/core/workflow-runs/run-123')
     expect(finalRequest.init.method).toBe('GET')
+    expect(hydratedRequest.url.pathname).toBe('/v1/core/workflow-runs/run-123/hydrated')
+    expect(hydratedRequest.init.method).toBe('GET')
     expect(result).toMatchObject({
       runId: 'run-123',
       status: 'completed',
@@ -480,6 +527,7 @@ describe('MissionSquad workflow tools', () => {
   it('reconnects when the workflow stream closes before completion and keeps waiting', async () => {
     const runningRecord = buildWorkflowRunRecord('running', 'running')
     const completedRecord = buildWorkflowRunRecord('completed', 'completed')
+    const hydrated = buildWorkflowRunHydratedRecord(completedRecord)
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: runningRecord }))
     fetchMock.mockResolvedValueOnce(sseResponse([
       ':workflow-heartbeat 1\n\n',
@@ -491,21 +539,26 @@ describe('MissionSquad workflow tools', () => {
       'data: [DONE]\n\n',
     ]))
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: completedRecord }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: hydrated }))
 
     const result = await callTool('msq_get_workflow_run_status', { runId: 'run-123' })
 
-    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(fetchMock).toHaveBeenCalledTimes(6)
     expect(getRequestAt(fetchMock, 1).url.pathname).toBe('/v1/core/workflow-runs/run-123/stream')
     expect(getRequestAt(fetchMock, 3).url.pathname).toBe('/v1/core/workflow-runs/run-123/stream')
+    expect(getRequestAt(fetchMock, 5).url.pathname).toBe('/v1/core/workflow-runs/run-123/hydrated')
     expect(result).toMatchObject({
       runId: 'run-123',
       status: 'completed',
     })
   })
 
-  it('returns only the main-agent result for a completed run', async () => {
+  it('returns only the main-agent result for a completed run using hydrated assistant content', async () => {
     const record = buildWorkflowRunRecord('completed', 'completed')
-    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: record }))
+    const hydrated = buildWorkflowRunHydratedRecord(record, {
+      mainAssistantContent: 'Hydrated authoritative answer from the main agent',
+    })
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: hydrated }))
 
     const result = await callTool('msq_get_workflow_result', { runId: 'run-123' })
     const resultRecord = result as Record<string, unknown>
@@ -521,7 +574,7 @@ describe('MissionSquad workflow tools', () => {
       result: {
         agentId: 'agent-main',
         agentName: 'Coordinator',
-        content: 'Final synthesized answer from the main agent',
+        content: 'Hydrated authoritative answer from the main agent',
         usage: {
           promptTokens: 4,
           completionTokens: 5,
@@ -536,6 +589,68 @@ describe('MissionSquad workflow tools', () => {
     })
     expect(resultRecord).not.toHaveProperty('helpers')
     expect(nestedResult).not.toHaveProperty('helperContent')
+  })
+
+  it('falls back to preview content when hydrated main chat is unavailable', async () => {
+    const record = buildWorkflowRunRecord('completed', 'completed')
+    const hydrated = buildWorkflowRunHydratedRecord(record, { includeMainChat: false })
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: hydrated }))
+
+    const result = await callTool('msq_get_workflow_result', { runId: 'run-123' })
+
+    expect(result).toMatchObject({
+      runId: 'run-123',
+      status: 'completed',
+      result: {
+        content: 'Final synthesized answer from the main agent',
+      },
+    })
+  })
+
+  it('waits briefly for completed workflow result when hydrated main chat exists but assistant content is not ready yet', async () => {
+    const completedRecord = buildWorkflowRunRecord('completed', 'completed')
+    const incompleteHydrated = buildWorkflowRunHydratedRecord(completedRecord, { includeMainAssistant: false })
+    const readyHydrated = buildWorkflowRunHydratedRecord(completedRecord, {
+      mainAssistantContent: 'Hydrated authoritative answer from the main agent',
+    })
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: incompleteHydrated }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: readyHydrated }))
+
+    const result = await callTool('msq_get_workflow_result', { runId: 'run-123' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(getRequestAt(fetchMock, 0).url.pathname).toBe('/v1/core/workflow-runs/run-123/hydrated')
+    expect(getRequestAt(fetchMock, 1).url.pathname).toBe('/v1/core/workflow-runs/run-123/hydrated')
+    expect(result).toMatchObject({
+      runId: 'run-123',
+      status: 'completed',
+      result: {
+        content: 'Hydrated authoritative answer from the main agent',
+      },
+    })
+  })
+
+  it('waits briefly for completed workflow status when hydrated main chat exists but assistant content is not ready yet', async () => {
+    const completedRecord = buildWorkflowRunRecord('completed', 'completed')
+    const incompleteHydrated = buildWorkflowRunHydratedRecord(completedRecord, { includeMainAssistant: false })
+    const readyHydrated = buildWorkflowRunHydratedRecord(completedRecord, {
+      mainAssistantContent: 'Hydrated authoritative answer from the main agent',
+    })
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: completedRecord }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: incompleteHydrated }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: readyHydrated }))
+
+    const result = await callTool('msq_get_workflow_run_status', { runId: 'run-123' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(getRequestAt(fetchMock, 1).url.pathname).toBe('/v1/core/workflow-runs/run-123/hydrated')
+    expect(getRequestAt(fetchMock, 2).url.pathname).toBe('/v1/core/workflow-runs/run-123/hydrated')
+    expect(result).toMatchObject({
+      runId: 'run-123',
+      status: 'completed',
+    })
   })
 
   it('errors when workflow result is not ready or not successful', async () => {
@@ -563,10 +678,11 @@ describe('MissionSquad workflow tools', () => {
     ]
 
     for (const scenario of scenarios) {
+      const record = buildWorkflowRunRecord(scenario.status, scenario.mainStatus)
       fetchMock.mockResolvedValueOnce(
         jsonResponse({
           success: true,
-          data: buildWorkflowRunRecord(scenario.status, scenario.mainStatus),
+          data: buildWorkflowRunHydratedRecord(record),
         }),
       )
 
@@ -577,9 +693,10 @@ describe('MissionSquad workflow tools', () => {
   })
 
   it('errors when a completed run does not have a completed main agent state', async () => {
+    const record = buildWorkflowRunRecord('completed', 'running')
     fetchMock.mockResolvedValueOnce(jsonResponse({
       success: true,
-      data: buildWorkflowRunRecord('completed', 'running'),
+      data: buildWorkflowRunHydratedRecord(record),
     }))
 
     await expect(callTool('msq_get_workflow_result', { runId: 'run-123' })).rejects.toThrow(

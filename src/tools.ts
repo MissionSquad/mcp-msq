@@ -124,6 +124,32 @@ const WorkflowRunRecordSchema = z.object({
   }).passthrough(),
 }).passthrough()
 
+const WorkflowRunMessageRecordSchema = z.object({
+  role: z.string(),
+  content: z.union([z.string(), z.null(), z.array(z.unknown())]).optional(),
+  tokenUsage: TokenUsageSchema.optional(),
+}).passthrough()
+
+const WorkflowChatHydrationSchema = z.object({
+  id: z.string(),
+  agentSlug: z.string(),
+  messages: z.array(WorkflowRunMessageRecordSchema),
+}).passthrough()
+
+const WorkflowRunHydratedRecordSchema = z.object({
+  record: WorkflowRunRecordSchema,
+  mainChat: WorkflowChatHydrationSchema.nullable(),
+  helperChats: z.array(z.object({
+    helperRunId: z.string(),
+    chat: WorkflowChatHydrationSchema.nullable(),
+  }).passthrough()),
+}).passthrough()
+
+const WorkflowRunHydratedResponseSchema = z.object({
+  success: z.boolean(),
+  data: WorkflowRunHydratedRecordSchema,
+}).passthrough()
+
 const WorkflowConfigListResponseSchema = z.object({
   success: z.boolean(),
   data: z.array(WorkflowConfigRecordSchema),
@@ -142,6 +168,8 @@ const WorkflowRunResponseSchema = z.object({
 
 type WorkflowConfigRecord = z.infer<typeof WorkflowConfigRecordSchema>
 type WorkflowRunRecord = z.infer<typeof WorkflowRunRecordSchema>
+type WorkflowRunHydratedRecord = z.infer<typeof WorkflowRunHydratedRecordSchema>
+type WorkflowRunMessageRecord = z.infer<typeof WorkflowRunMessageRecordSchema>
 
 function parseWorkflowConfigListResponse(payload: unknown): WorkflowConfigRecord[] {
   return WorkflowConfigListResponseSchema.parse(payload).data
@@ -153,6 +181,10 @@ function parseWorkflowConfigResponse(payload: unknown): WorkflowConfigRecord {
 
 function parseWorkflowRunResponse(payload: unknown): WorkflowRunRecord {
   return WorkflowRunResponseSchema.parse(payload).data
+}
+
+function parseWorkflowRunHydratedResponse(payload: unknown): WorkflowRunHydratedRecord {
+  return WorkflowRunHydratedResponseSchema.parse(payload).data
 }
 
 function mapWorkflowList(workflows: WorkflowConfigRecord[]) {
@@ -189,6 +221,52 @@ async function fetchWorkflowRunRecord(
   return parseWorkflowRunResponse(response)
 }
 
+async function fetchWorkflowRunHydratedRecord(
+  client: MissionSquadClient,
+  runId: string,
+): Promise<WorkflowRunHydratedRecord> {
+  const response = await client.requestJson({
+    method: 'GET',
+    path: `core/workflow-runs/${encodePathSegment(runId)}/hydrated`,
+  })
+
+  return parseWorkflowRunHydratedResponse(response)
+}
+
+function extractLatestAssistantMessage(
+  messages: WorkflowRunMessageRecord[] | undefined,
+): WorkflowRunMessageRecord | undefined {
+  return messages?.slice().reverse().find((message) => message.role === 'assistant')
+}
+
+function hasHydratedMainResult(hydrated: WorkflowRunHydratedRecord | null): boolean {
+  if (!hydrated?.mainChat) {
+    return false
+  }
+
+  const assistant = extractLatestAssistantMessage(hydrated.mainChat.messages)
+  return typeof assistant?.content === 'string'
+}
+
+function needsHydratedMainResultWait(hydrated: WorkflowRunHydratedRecord | null): boolean {
+  return Boolean(hydrated?.mainChat) && !hasHydratedMainResult(hydrated)
+}
+
+function extractHydratedMainResult(hydrated: WorkflowRunHydratedRecord | null): {
+  content: string | null
+  usage: z.infer<typeof TokenUsageSchema>
+} {
+  const assistant = extractLatestAssistantMessage(hydrated?.mainChat?.messages)
+  return {
+    content: typeof assistant?.content === 'string' ? assistant.content : null,
+    usage: assistant?.tokenUsage ?? null,
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function waitForWorkflowRunRecord(
   client: MissionSquadClient,
   runId: string,
@@ -220,6 +298,49 @@ async function waitForWorkflowRunRecord(
   }
 
   return latestRecord
+}
+
+async function waitForCompletedWorkflowReadiness(
+  client: MissionSquadClient,
+  runId: string,
+  record: WorkflowRunRecord,
+): Promise<WorkflowRunHydratedRecord | null> {
+  if (record.status !== 'completed' || record.main.status !== 'completed') {
+    return null
+  }
+
+  const maxAttempts = 8
+  const delayMs = 250
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const hydrated = await fetchWorkflowRunHydratedRecord(client, runId)
+    if (!needsHydratedMainResultWait(hydrated)) {
+      return hydrated
+    }
+
+    if (attempt < maxAttempts - 1) {
+      await sleep(delayMs)
+    }
+  }
+
+  throw new Error('Workflow completed but final result is not ready yet. Use msq_get_workflow_run_status again.')
+}
+
+async function waitForWorkflowRunStatusReady(
+  client: MissionSquadClient,
+  runId: string,
+): Promise<WorkflowRunRecord> {
+  const record = await waitForWorkflowRunRecord(client, runId)
+
+  if (record.status !== 'completed') {
+    return record
+  }
+
+  const initialHydrated = await fetchWorkflowRunHydratedRecord(client, runId)
+  const hydrated = needsHydratedMainResultWait(initialHydrated)
+    ? await waitForCompletedWorkflowReadiness(client, runId, record)
+    : initialHydrated
+  return hydrated?.record ?? record
 }
 
 function mapWorkflowRunStatus(record: WorkflowRunRecord) {
@@ -256,7 +377,10 @@ function mapWorkflowRunStatus(record: WorkflowRunRecord) {
   }
 }
 
-function mapWorkflowRunResult(record: WorkflowRunRecord) {
+function mapWorkflowRunResult(
+  record: WorkflowRunRecord,
+  hydrated: WorkflowRunHydratedRecord | null,
+) {
   if (record.status === 'queued' || record.status === 'running') {
     throw new Error('Workflow result not ready. Use msq_get_workflow_run_status.')
   }
@@ -270,6 +394,8 @@ function mapWorkflowRunResult(record: WorkflowRunRecord) {
     throw new Error('Workflow completed without a completed main agent state.')
   }
 
+  const hydratedResult = extractHydratedMainResult(hydrated)
+
   return {
     runId: record.runId,
     workflowId: record.workflowConfigId,
@@ -280,8 +406,8 @@ function mapWorkflowRunResult(record: WorkflowRunRecord) {
     result: {
       agentId: record.main.agentId,
       agentName: record.main.agentName,
-      content: record.resumeSnapshot.main.previewContent,
-      usage: record.main.usage,
+      content: hydratedResult.content ?? record.resumeSnapshot.main.previewContent,
+      usage: hydratedResult.usage ?? record.main.usage,
     },
     aggregateUsage: record.aggregateUsage,
   }
@@ -305,6 +431,36 @@ function entriesToArray(value: unknown): unknown[] {
   )
 }
 
+// Defense-in-depth: even though the upstream API is responsible for masking
+// secrets, the MCP server is the boundary that hands data to AI agents and
+// chat transcripts. A regression in the API's redaction (see incident
+// 2026-04-19, embeddedCollections leak) MUST NOT propagate credentials to
+// callers. Mask all credential-shaped fields on the way out.
+const REDACTED_KEY_FIELDS = new Set(['apiKey', 'api_key', 'token', 'accessToken', 'secret'])
+
+function maskCredential(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length === 0) {
+    return value
+  }
+  if (value.length <= 8) {
+    return '***'
+  }
+  return `${value.substring(0, 3)}...${value.substring(value.length - 4)}`
+}
+
+function redactSecrets<T>(item: T): T {
+  if (!isRecord(item)) {
+    return item
+  }
+  const out: Record<string, unknown> = { ...item }
+  for (const field of REDACTED_KEY_FIELDS) {
+    if (field in out) {
+      out[field] = maskCredential(out[field])
+    }
+  }
+  return out as T
+}
+
 export function summarizeCoreConfig(payload: unknown): unknown {
   if (!isRecord(payload)) {
     return payload
@@ -319,7 +475,7 @@ export function summarizeCoreConfig(payload: unknown): unknown {
   const voicesById = isRecord(payload.voices) ? payload.voices : {}
 
   return {
-    models: entriesToArray(modelsById),
+    models: entriesToArray(modelsById).map(redactSecrets),
     agents: entriesToArray(agentsById).map((agent) =>
       isRecord(agent)
         ? {
@@ -332,8 +488,8 @@ export function summarizeCoreConfig(payload: unknown): unknown {
     ),
     squads: entriesToArray(squadsById),
     missions: entriesToArray(missionsById),
-    embeddingModels: entriesToArray(embeddingModelsById),
-    embeddedCollections: entriesToArray(embeddedCollectionsById),
+    embeddingModels: entriesToArray(embeddingModelsById).map(redactSecrets),
+    embeddedCollections: entriesToArray(embeddedCollectionsById).map(redactSecrets),
     voices: entriesToArray(voicesById),
     counts: {
       models: Object.keys(modelsById).length,
@@ -689,7 +845,7 @@ const msqTools = [
     description: 'Get workflow run status including helper success/failure state. Waits for in-progress runs to reach a terminal state when the API stream is available.',
     parameters: WorkflowRunIdSchema,
     run: async (client, args) => {
-      return mapWorkflowRunStatus(await waitForWorkflowRunRecord(client, args.runId))
+      return mapWorkflowRunStatus(await waitForWorkflowRunStatusReady(client, args.runId))
     },
   }),
   defineTool({
@@ -697,12 +853,15 @@ const msqTools = [
     description: 'Get the final main-agent result for a completed MissionSquad workflow run.',
     parameters: WorkflowRunIdSchema,
     run: async (client, args) => {
-      const response = await client.requestJson({
-        method: 'GET',
-        path: `core/workflow-runs/${encodePathSegment(args.runId)}`,
-      })
+      const hydrated = await fetchWorkflowRunHydratedRecord(client, args.runId)
+      const record = hydrated.record
 
-      return mapWorkflowRunResult(parseWorkflowRunResponse(response))
+      if (record.status === 'completed' && record.main.status === 'completed' && needsHydratedMainResultWait(hydrated)) {
+        const readyHydrated = await waitForCompletedWorkflowReadiness(client, args.runId, record)
+        return mapWorkflowRunResult(readyHydrated?.record ?? record, readyHydrated)
+      }
+
+      return mapWorkflowRunResult(record, hydrated)
     },
   }),
   defineTool({
