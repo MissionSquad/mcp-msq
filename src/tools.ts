@@ -22,6 +22,17 @@ import {
   DiscoverProviderModelsSchema,
   EmbeddingsSchema,
   EmptySchema,
+  FactoryCreateSchema,
+  FactoryIdSchema,
+  FactoryRunCreateSchema,
+  FactoryRunIdSchema,
+  FactoryRunsListSchema,
+  FactoryRunStepsListSchema,
+  FactoryScheduleCreateSchema,
+  FactoryScheduleIdSchema,
+  FactoryScheduleUpdateSchema,
+  FactoryStepIdsSchema,
+  FactoryUpdateSchema,
   FileContentSchema,
   FileIdSchema,
   GeneratePromptSchema,
@@ -166,10 +177,226 @@ const WorkflowRunResponseSchema = z.object({
   data: WorkflowRunRecordSchema,
 }).passthrough()
 
+const FactoryStepTransitionSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('next'),
+  }).passthrough(),
+  z.object({
+    kind: z.literal('stop'),
+  }).passthrough(),
+  z.object({
+    kind: z.literal('loop_to_index'),
+    targetIndex: z.number(),
+  }).passthrough(),
+])
+
+const FactoryAgentRefRecordSchema = z.object({
+  agentId: z.string(),
+  promptOverride: z.string().optional(),
+}).passthrough()
+
+const FactoryWorkflowRefRecordSchema = z.object({
+  workflowConfigId: z.string(),
+  payloadSchema: z.record(z.unknown()).optional(),
+  fixerAgentId: z.string().optional(),
+  maxRepairAttempts: z.number().optional(),
+}).passthrough()
+
+const FactoryStepConfigRecordSchema = z.object({
+  stepId: z.string(),
+  index: z.number(),
+  name: z.string(),
+  kind: z.enum(['agent', 'workflow']),
+  limitStepInvocations: z.boolean().optional(),
+  agentRef: FactoryAgentRefRecordSchema.optional(),
+  workflowRef: FactoryWorkflowRefRecordSchema.optional(),
+  maxStepInvocations: z.number(),
+  transition: FactoryStepTransitionSchema,
+}).passthrough()
+
+const FactoryConfigRecordSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  steps: z.array(FactoryStepConfigRecordSchema),
+  continuous: z.boolean(),
+  limitTotalInvocations: z.boolean().optional(),
+  maxTotalInvocations: z.number(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).passthrough()
+
+const FactoryRunStatusSchema = z.enum(['queued', 'running', 'paused', 'completed', 'cancelled', 'error'])
+
+const FactoryRunRecordSchema = z.object({
+  runId: z.string(),
+  factoryConfigId: z.string().nullable(),
+  ownerUserId: z.string(),
+  factoryNameSnapshot: z.string(),
+  configSnapshot: z.unknown(),
+  trigger: z.enum(['manual', 'scheduler']),
+  scheduleId: z.string().optional(),
+  status: FactoryRunStatusSchema,
+  cursor: z.object({
+    nextStepIndex: z.number().nullable(),
+    iterationCount: z.number(),
+    completedCycleCount: z.number().optional(),
+  }).passthrough(),
+  carryPayload: z.string(),
+  aggregateUsage: TokenUsageSchema,
+  perStepInvocationCounts: z.record(z.number()),
+  startedAt: z.number(),
+  completedAt: z.number().nullish(),
+  cancelledAt: z.number().nullish(),
+  pausedAt: z.number().nullish(),
+  errorMessage: z.string().nullish(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).passthrough()
+
+const FactoryInvokedRecordSchema = z.object({
+  kind: z.enum(['agent', 'workflow', 'fixer_agent']),
+  agentId: z.string().optional(),
+  agentName: z.string().optional(),
+  workflowConfigId: z.string().optional(),
+  workflowName: z.string().optional(),
+}).passthrough()
+
+const FactoryStepValidationRecordSchema = z.object({
+  schemaPresent: z.boolean(),
+  initialOutcome: z.enum(['pass', 'fail', 'not_applicable']),
+  repairAttempts: z.number(),
+  finalOutcome: z.enum(['pass', 'fail']),
+  errors: z.array(z.object({
+    path: z.string(),
+    message: z.string(),
+  }).passthrough()).optional(),
+}).passthrough()
+
+const FactoryStepRunRecordSchema = z.object({
+  stepRunId: z.string(),
+  runId: z.string(),
+  ownerUserId: z.string(),
+  factoryConfigId: z.string(),
+  stepId: z.string(),
+  stepIndex: z.number(),
+  stepName: z.string(),
+  sequence: z.number(),
+  kind: z.enum(['agent', 'workflow']),
+  invoked: FactoryInvokedRecordSchema,
+  triggeredBy: z.enum(['manual_start', 'previous_step_output', 'loopback', 'scheduler']),
+  upstreamStepRunId: z.string().nullable(),
+  input: z.string(),
+  output: z.string(),
+  workflowDataPayloadIn: z.string().nullable(),
+  workflowRunId: z.string().optional(),
+  chatId: z.string().optional(),
+  validation: FactoryStepValidationRecordSchema.optional(),
+  status: z.enum(['queued', 'running', 'completed', 'error', 'cancelled', 'skipped']),
+  startedAt: z.number(),
+  completedAt: z.number().optional(),
+  errorMessage: z.string().optional(),
+  usage: TokenUsageSchema,
+  toolEvents: z.array(z.record(z.unknown())),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).passthrough()
+
+const PublicChatSessionRecordSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  agentUsername: z.string(),
+  agentSlug: z.string(),
+  origin: z.enum(['chat', 'workflow', 'factory']).optional(),
+  title: z.string(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  messages: z.array(WorkflowRunMessageRecordSchema),
+}).passthrough()
+
+const FactoryStepHydratedRecordSchema = z.object({
+  stepRun: FactoryStepRunRecordSchema,
+  workflowRun: WorkflowRunHydratedRecordSchema.nullable().optional(),
+  chatSession: PublicChatSessionRecordSchema.nullable().optional(),
+}).passthrough()
+
+const FactoryScheduleRecordSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  factoryConfigId: z.string(),
+  label: z.string().optional(),
+  startDate: z.number(),
+  timesToRun: z.array(z.object({
+    hour: z.number(),
+    minute: z.number(),
+  }).passthrough()),
+  repeatInterval: z.enum(['once', 'daily', 'weekly', 'monthly']),
+  daysOfWeek: z.array(z.number()).optional(),
+  dayOfMonth: z.number().optional(),
+  status: z.enum(['enabled', 'disabled', 'running']),
+  lastRunAt: z.number().optional(),
+  nextRunAt: z.number(),
+  initialCarryPayload: z.string().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).passthrough()
+
+const FactoryConfigListResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.array(FactoryConfigRecordSchema),
+}).passthrough()
+
+const FactoryConfigResponseSchema = z.object({
+  success: z.boolean(),
+  data: FactoryConfigRecordSchema,
+}).passthrough()
+
+const FactoryRunListResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.array(FactoryRunRecordSchema),
+}).passthrough()
+
+const FactoryRunResponseSchema = z.object({
+  success: z.boolean(),
+  runId: z.string().optional(),
+  data: FactoryRunRecordSchema,
+}).passthrough()
+
+const FactoryStepRunListResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.array(FactoryStepRunRecordSchema),
+}).passthrough()
+
+const FactoryStepRunResponseSchema = z.object({
+  success: z.boolean(),
+  data: FactoryStepRunRecordSchema,
+}).passthrough()
+
+const FactoryStepHydratedResponseSchema = z.object({
+  success: z.boolean(),
+  data: FactoryStepHydratedRecordSchema,
+}).passthrough()
+
+const FactoryScheduleListResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.array(FactoryScheduleRecordSchema),
+}).passthrough()
+
+const FactoryScheduleResponseSchema = z.object({
+  success: z.boolean(),
+  data: FactoryScheduleRecordSchema,
+}).passthrough()
+
 type WorkflowConfigRecord = z.infer<typeof WorkflowConfigRecordSchema>
 type WorkflowRunRecord = z.infer<typeof WorkflowRunRecordSchema>
 type WorkflowRunHydratedRecord = z.infer<typeof WorkflowRunHydratedRecordSchema>
 type WorkflowRunMessageRecord = z.infer<typeof WorkflowRunMessageRecordSchema>
+type FactoryConfigRecord = z.infer<typeof FactoryConfigRecordSchema>
+type FactoryRunRecord = z.infer<typeof FactoryRunRecordSchema>
+type FactoryStepRunRecord = z.infer<typeof FactoryStepRunRecordSchema>
+type FactoryStepHydratedRecord = z.infer<typeof FactoryStepHydratedRecordSchema>
+type FactoryScheduleRecord = z.infer<typeof FactoryScheduleRecordSchema>
 
 function parseWorkflowConfigListResponse(payload: unknown): WorkflowConfigRecord[] {
   return WorkflowConfigListResponseSchema.parse(payload).data
@@ -187,12 +414,56 @@ function parseWorkflowRunHydratedResponse(payload: unknown): WorkflowRunHydrated
   return WorkflowRunHydratedResponseSchema.parse(payload).data
 }
 
+function parseFactoryConfigListResponse(payload: unknown): FactoryConfigRecord[] {
+  return FactoryConfigListResponseSchema.parse(payload).data
+}
+
+function parseFactoryConfigResponse(payload: unknown): FactoryConfigRecord {
+  return FactoryConfigResponseSchema.parse(payload).data
+}
+
+function parseFactoryRunListResponse(payload: unknown): FactoryRunRecord[] {
+  return FactoryRunListResponseSchema.parse(payload).data
+}
+
+function parseFactoryRunResponse(payload: unknown): FactoryRunRecord {
+  return FactoryRunResponseSchema.parse(payload).data
+}
+
+function parseFactoryStepRunListResponse(payload: unknown): FactoryStepRunRecord[] {
+  return FactoryStepRunListResponseSchema.parse(payload).data
+}
+
+function parseFactoryStepRunResponse(payload: unknown): FactoryStepRunRecord {
+  return FactoryStepRunResponseSchema.parse(payload).data
+}
+
+function parseFactoryStepHydratedResponse(payload: unknown): FactoryStepHydratedRecord {
+  return FactoryStepHydratedResponseSchema.parse(payload).data
+}
+
+function parseFactoryScheduleListResponse(payload: unknown): FactoryScheduleRecord[] {
+  return FactoryScheduleListResponseSchema.parse(payload).data
+}
+
+function parseFactoryScheduleResponse(payload: unknown): FactoryScheduleRecord {
+  return FactoryScheduleResponseSchema.parse(payload).data
+}
+
 function mapWorkflowList(workflows: WorkflowConfigRecord[]) {
   return { workflows }
 }
 
 function mapWorkflow(workflow: WorkflowConfigRecord) {
   return { workflow }
+}
+
+function mapFactoryList(factories: FactoryConfigRecord[]) {
+  return { factories }
+}
+
+function mapFactory(factory: FactoryConfigRecord) {
+  return { factory }
 }
 
 function mapWorkflowRunSummary(record: WorkflowRunRecord) {
@@ -205,8 +476,97 @@ function mapWorkflowRunSummary(record: WorkflowRunRecord) {
   }
 }
 
+function mapFactoryRunSummary(record: FactoryRunRecord) {
+  return {
+    runId: record.runId,
+    factoryId: record.factoryConfigId,
+    factoryName: record.factoryNameSnapshot,
+    trigger: record.trigger,
+    status: record.status,
+    cursor: record.cursor,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt ?? undefined,
+    cancelledAt: record.cancelledAt ?? undefined,
+    pausedAt: record.pausedAt ?? undefined,
+    aggregateUsage: record.aggregateUsage,
+    perStepInvocationCounts: record.perStepInvocationCounts,
+  }
+}
+
+function mapFactoryRunList(runs: FactoryRunRecord[]) {
+  return {
+    runs: runs.map((record) => mapFactoryRunSummary(record)),
+  }
+}
+
+function mapFactoryRunStatus(record: FactoryRunRecord) {
+  return {
+    ...mapFactoryRunSummary(record),
+    errorMessage: record.errorMessage ?? undefined,
+  }
+}
+
+function mapFactoryRunResult(record: FactoryRunRecord) {
+  if (record.status === 'queued' || record.status === 'running') {
+    throw new Error('Factory result not ready. Use msq_get_factory_run_status.')
+  }
+
+  if (record.status === 'paused') {
+    throw new Error('Factory run is paused. Resume it or inspect status first.')
+  }
+
+  if (record.status === 'error' || record.status === 'cancelled') {
+    const suffix = record.errorMessage ? ` ${record.errorMessage}` : ''
+    throw new Error(`Factory did not complete successfully.${suffix}`)
+  }
+
+  return {
+    runId: record.runId,
+    factoryId: record.factoryConfigId,
+    factoryName: record.factoryNameSnapshot,
+    trigger: record.trigger,
+    status: 'completed' as const,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt ?? undefined,
+    cursor: record.cursor,
+    aggregateUsage: record.aggregateUsage,
+    perStepInvocationCounts: record.perStepInvocationCounts,
+    result: {
+      carryPayload: record.carryPayload,
+    },
+  }
+}
+
+function mapFactoryStepList(steps: FactoryStepRunRecord[]) {
+  return { steps }
+}
+
+function mapFactoryStep(step: FactoryStepRunRecord) {
+  return { step }
+}
+
+function mapFactoryStepHydrated(hydrated: FactoryStepHydratedRecord) {
+  return {
+    stepRun: hydrated.stepRun,
+    workflowRun: hydrated.workflowRun ?? null,
+    chatSession: hydrated.chatSession ?? null,
+  }
+}
+
+function mapFactoryScheduleList(schedules: FactoryScheduleRecord[]) {
+  return { schedules }
+}
+
+function mapFactorySchedule(schedule: FactoryScheduleRecord) {
+  return { schedule }
+}
+
 function isWorkflowRunTerminalStatus(status: z.infer<typeof WorkflowStatusSchema>): boolean {
   return status === 'completed' || status === 'error' || status === 'cancelled'
+}
+
+function isFactoryRunWaitingStatus(status: z.infer<typeof FactoryRunStatusSchema>): boolean {
+  return status === 'queued' || status === 'running'
 }
 
 async function fetchWorkflowRunRecord(
@@ -231,6 +591,59 @@ async function fetchWorkflowRunHydratedRecord(
   })
 
   return parseWorkflowRunHydratedResponse(response)
+}
+
+async function fetchFactoryRunRecord(
+  client: MissionSquadClient,
+  runId: string,
+): Promise<FactoryRunRecord> {
+  const response = await client.requestJson({
+    method: 'GET',
+    path: `core/factory-runs/${encodePathSegment(runId)}`,
+  })
+
+  return parseFactoryRunResponse(response)
+}
+
+async function fetchFactorySchedules(
+  client: MissionSquadClient,
+): Promise<FactoryScheduleRecord[]> {
+  const response = await client.requestJson({
+    method: 'GET',
+    path: 'core/factory-schedules',
+  })
+
+  return parseFactoryScheduleListResponse(response)
+}
+
+function assertValidEffectiveFactoryScheduleUpdate(
+  existing: FactoryScheduleRecord | null,
+  update: z.infer<typeof FactoryScheduleUpdateSchema>,
+): void {
+  const effectiveRepeatInterval = update.repeatInterval ?? existing?.repeatInterval
+  const effectiveDaysOfWeek = update.daysOfWeek ?? existing?.daysOfWeek
+  const effectiveDayOfMonth = update.dayOfMonth ?? existing?.dayOfMonth
+
+  if (effectiveRepeatInterval === 'weekly' && (!effectiveDaysOfWeek || effectiveDaysOfWeek.length === 0)) {
+    throw new Error('daysOfWeek is required for weekly schedules')
+  }
+
+  if (effectiveRepeatInterval === 'monthly' && effectiveDayOfMonth === undefined) {
+    throw new Error('dayOfMonth is required for monthly schedules')
+  }
+}
+
+function parseSseJsonData(data: string): UnknownRecord | null {
+  if (data === '[DONE]') {
+    return { type: '[DONE]' }
+  }
+
+  try {
+    const parsed = JSON.parse(data)
+    return isRecord(parsed) ? parsed : null
+  } catch {
+    return null
+  }
 }
 
 function extractLatestAssistantMessage(
@@ -267,6 +680,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+class FactoryRunPausedSignal extends Error {
+  constructor() {
+    super('Factory run paused')
+  }
+}
+
 async function waitForWorkflowRunRecord(
   client: MissionSquadClient,
   runId: string,
@@ -294,6 +713,63 @@ async function waitForWorkflowRunRecord(
 
     if (sawDone) {
       throw new Error('Workflow is still running. Use msq_get_workflow_run_status again.')
+    }
+  }
+
+  return latestRecord
+}
+
+async function waitForFactoryRunRecord(
+  client: MissionSquadClient,
+  runId: string,
+): Promise<FactoryRunRecord> {
+  let latestRecord = await fetchFactoryRunRecord(client, runId)
+
+  while (isFactoryRunWaitingStatus(latestRecord.status)) {
+    let sawTerminalHint = false
+    let sawPauseHint = false
+
+    try {
+      await client.consumeServerSentEvents(
+        {
+          path: `core/factory-runs/${encodePathSegment(runId)}/stream`,
+        },
+        (event) => {
+          const parsed = parseSseJsonData(event.data)
+          if (!parsed) {
+            return
+          }
+
+          const type = parsed.type
+          if (type === 'run_paused') {
+            sawPauseHint = true
+            throw new FactoryRunPausedSignal()
+          }
+
+          if (
+            type === 'run_completed'
+            || type === 'run_completed_at_cap'
+            || type === 'run_cancelled'
+            || type === 'error'
+            || type === '[DONE]'
+          ) {
+            sawTerminalHint = true
+          }
+        },
+      )
+    } catch (error) {
+      if (!(error instanceof FactoryRunPausedSignal)) {
+        throw error
+      }
+    }
+
+    latestRecord = await fetchFactoryRunRecord(client, runId)
+    if (!isFactoryRunWaitingStatus(latestRecord.status)) {
+      return latestRecord
+    }
+
+    if (sawPauseHint || sawTerminalHint) {
+      continue
     }
   }
 
@@ -862,6 +1338,300 @@ const msqTools = [
       }
 
       return mapWorkflowRunResult(record, hydrated)
+    },
+  }),
+  defineTool({
+    name: 'msq_list_factories',
+    description:
+      'List all factory configs in your MissionSquad account. '
+      + 'Use this to discover available factories before reading, running, or scheduling one.',
+    parameters: EmptySchema,
+    run: async (client) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: 'core/factories',
+      })
+
+      return mapFactoryList(parseFactoryConfigListResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_get_factory',
+    description:
+      'Get one factory config by id. '
+      + 'Use this when you already know the factory id and need the exact saved definition.',
+    parameters: FactoryIdSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: `core/factories/${encodePathSegment(args.id)}`,
+      })
+
+      return mapFactory(parseFactoryConfigResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_create_factory',
+    description:
+      'Create a new factory config from a full factory definition. '
+      + 'MissionSquad normalizes missing step ids, step indices, and runtime defaults when the factory is saved.',
+    parameters: FactoryCreateSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: 'core/factories',
+        body: args,
+      })
+
+      return mapFactory(parseFactoryConfigResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_update_factory',
+    description:
+      'Update an existing factory config by id. '
+      + 'If you provide `steps`, send the full desired step array rather than a partial patch.',
+    parameters: FactoryUpdateSchema,
+    run: async (client, args) => {
+      const { id, ...body } = args
+      const response = await client.requestJson({
+        method: 'PUT',
+        path: `core/factories/${encodePathSegment(id)}`,
+        body,
+      })
+
+      return mapFactory(parseFactoryConfigResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_delete_factory',
+    description: 'Delete a factory config by id.',
+    parameters: FactoryIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'DELETE',
+        path: `core/factories/${encodePathSegment(args.id)}`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_list_factory_runs',
+    description:
+      'List recent and historical runs for one factory config. '
+      + 'Returns compact run summaries without the full config snapshot or carry payload.',
+    parameters: FactoryRunsListSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: `core/factories/${encodePathSegment(args.factoryId)}/runs`,
+        query: {
+          limit: args.limit,
+          offset: args.offset,
+        },
+      })
+
+      return mapFactoryRunList(parseFactoryRunListResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_run_factory',
+    description:
+      'Start a factory run in the background and return the run id to monitor. '
+      + 'If `initialCarryPayload` is omitted, MissionSquad starts the run with an empty string payload.',
+    parameters: FactoryRunCreateSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: 'core/factory-runs',
+        body: args,
+      })
+
+      return mapFactoryRunSummary(parseFactoryRunResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_get_factory_run_status',
+    description:
+      'Wait for a factory run to finish or pause, then return high-level status without the final carry payload content. '
+      + 'Use this after msq_run_factory.',
+    parameters: FactoryRunIdSchema,
+    run: async (client, args) => {
+      return mapFactoryRunStatus(await waitForFactoryRunRecord(client, args.runId))
+    },
+  }),
+  defineTool({
+    name: 'msq_get_factory_result',
+    description:
+      'Get the final carry payload from a completed factory run. '
+      + 'Use this only after msq_get_factory_run_status reports a successful completion.',
+    parameters: FactoryRunIdSchema,
+    run: async (client, args) => {
+      return mapFactoryRunResult(await fetchFactoryRunRecord(client, args.runId))
+    },
+  }),
+  defineTool({
+    name: 'msq_list_factory_run_steps',
+    description:
+      'List the recorded step executions for one factory run. '
+      + 'Use this to inspect what each step consumed, produced, and how it finished.',
+    parameters: FactoryRunStepsListSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: `core/factory-runs/${encodePathSegment(args.runId)}/steps`,
+        query: {
+          limit: args.limit,
+          offset: args.offset,
+        },
+      })
+
+      return mapFactoryStepList(parseFactoryStepRunListResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_get_factory_run_step',
+    description:
+      'Get one factory step execution record by step run id. '
+      + 'Use this for focused debugging of a specific step within a factory run.',
+    parameters: FactoryStepIdsSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: `core/factory-runs/${encodePathSegment(args.runId)}/steps/${encodePathSegment(args.stepRunId)}`,
+      })
+
+      return mapFactoryStep(parseFactoryStepRunResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_get_factory_run_step_hydrated',
+    description:
+      'Get one factory step execution plus linked workflow-run and chat-session details when they exist. '
+      + 'Use this for deep debugging of workflow-backed or agent-backed steps.',
+    parameters: FactoryStepIdsSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: `core/factory-runs/${encodePathSegment(args.runId)}/steps/${encodePathSegment(args.stepRunId)}/hydrated`,
+      })
+
+      return mapFactoryStepHydrated(parseFactoryStepHydratedResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_pause_factory_run',
+    description:
+      'Pause a running factory run so it remains resumable. '
+      + 'Preserves raw API noop responses because they are part of the run-control contract.',
+    parameters: FactoryRunIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'POST',
+        path: `core/factory-runs/${encodePathSegment(args.runId)}/pause`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_resume_factory_run',
+    description:
+      'Resume a paused factory run. '
+      + 'Preserves raw API noop responses because resume is only valid from the paused state.',
+    parameters: FactoryRunIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'POST',
+        path: `core/factory-runs/${encodePathSegment(args.runId)}/resume`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_cancel_factory_run',
+    description:
+      'Cancel a factory run and report whether the cancellation happened now or had already happened.',
+    parameters: FactoryRunIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'POST',
+        path: `core/factory-runs/${encodePathSegment(args.runId)}/cancel`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_list_factory_schedules',
+    description:
+      'List all saved factory schedules in your MissionSquad account. '
+      + 'Use this to discover scheduled factory automation.',
+    parameters: EmptySchema,
+    run: async (client) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: 'core/factory-schedules',
+      })
+
+      return mapFactoryScheduleList(parseFactoryScheduleListResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_create_factory_schedule',
+    description:
+      'Create a factory schedule using UTC `timesToRun` entries. '
+      + 'Weekly schedules require `daysOfWeek`; monthly schedules require `dayOfMonth`.',
+    parameters: FactoryScheduleCreateSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: 'core/factory-schedules',
+        body: args,
+      })
+
+      return mapFactorySchedule(parseFactoryScheduleResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_update_factory_schedule',
+    description:
+      'Update an existing factory schedule by id. '
+      + 'Cadence fields are validated against the effective merged schedule state, so clearing weekly/monthly calendar fields is rejected when it would make the saved schedule invalid.',
+    parameters: FactoryScheduleUpdateSchema,
+    run: async (client, args) => {
+      if (
+        args.repeatInterval !== undefined
+        || args.daysOfWeek !== undefined
+        || args.dayOfMonth !== undefined
+      ) {
+        const schedules = await fetchFactorySchedules(client)
+        const existing = schedules.find((schedule) => schedule.id === args.id) ?? null
+        assertValidEffectiveFactoryScheduleUpdate(existing, args)
+      }
+
+      const { id, ...body } = args
+      const response = await client.requestJson({
+        method: 'PUT',
+        path: `core/factory-schedules/${encodePathSegment(id)}`,
+        body,
+      })
+
+      return mapFactorySchedule(parseFactoryScheduleResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_delete_factory_schedule',
+    description: 'Delete a factory schedule by id.',
+    parameters: FactoryScheduleIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'DELETE',
+        path: `core/factory-schedules/${encodePathSegment(args.id)}`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_toggle_factory_schedule',
+    description:
+      'Toggle a factory schedule between enabled and disabled without editing its other fields.',
+    parameters: FactoryScheduleIdSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: `core/factory-schedules/${encodePathSegment(args.id)}/toggle`,
+      })
+
+      return mapFactorySchedule(parseFactoryScheduleResponse(response))
     },
   }),
   defineTool({

@@ -114,6 +114,26 @@ If no API key is available, the tool returns a user-facing error.
 - `msq_run_workflow`
 - `msq_get_workflow_run_status`
 - `msq_get_workflow_result`
+- `msq_list_factories`
+- `msq_get_factory`
+- `msq_create_factory`
+- `msq_update_factory`
+- `msq_delete_factory`
+- `msq_list_factory_runs`
+- `msq_run_factory`
+- `msq_get_factory_run_status`
+- `msq_get_factory_result`
+- `msq_list_factory_run_steps`
+- `msq_get_factory_run_step`
+- `msq_get_factory_run_step_hydrated`
+- `msq_pause_factory_run`
+- `msq_resume_factory_run`
+- `msq_cancel_factory_run`
+- `msq_list_factory_schedules`
+- `msq_create_factory_schedule`
+- `msq_update_factory_schedule`
+- `msq_delete_factory_schedule`
+- `msq_toggle_factory_schedule`
 - `msq_get_core_config`
 - `msq_get_core_config_summary`
 - `msq_scrape_url`
@@ -228,6 +248,51 @@ When `dataPayload` is provided to `msq_run_workflow`, it overrides the saved wor
 `msq_get_workflow_run_status` returns helper success/failure state without helper content. For queued or running workflow runs, it waits on the MissionSquad workflow SSE stream and returns once the run reaches a terminal state.
 
 `msq_get_workflow_result` returns only the final main-agent response and will fail if the run is still in progress or did not complete successfully.
+
+## Factory Lifecycle
+
+Factory management uses the persisted factory config, factory run, factory step, and factory schedule endpoints.
+
+Supported factory operations:
+
+- list factory configs with `msq_list_factories`
+- fetch a single factory config with `msq_get_factory`
+- create a factory config with `msq_create_factory`
+- update a factory config with `msq_update_factory`
+- delete a factory config with `msq_delete_factory`
+- list recent runs for a factory with `msq_list_factory_runs`
+- start a factory run with `msq_run_factory`
+- wait for a run to complete or pause with `msq_get_factory_run_status`
+- fetch the final carry payload with `msq_get_factory_result`
+- inspect recorded step runs with `msq_list_factory_run_steps`
+- fetch one step run with `msq_get_factory_run_step`
+- fetch one step run plus linked workflow/chat details with `msq_get_factory_run_step_hydrated`
+- pause, resume, or cancel runs with `msq_pause_factory_run`, `msq_resume_factory_run`, and `msq_cancel_factory_run`
+- list, create, update, delete, or toggle schedules with the `msq_*factory_schedule*` tools
+
+Recommended factory tool sequence:
+
+- discover or select the factory with `msq_list_factories` or `msq_get_factory`
+- start the run with `msq_run_factory`
+- wait for completion or pause with `msq_get_factory_run_status`
+- fetch the final output with `msq_get_factory_result`
+- use the step tools only when you need debugging or execution detail
+
+`msq_run_factory` accepts:
+
+- `factoryConfigId` (required)
+- `initialCarryPayload` (optional string; if omitted, MissionSquad starts the run with an empty string payload)
+
+`msq_get_factory_run_status` returns compact high-level run status and intentionally omits the final `carryPayload`. For queued or running runs, it waits on the MissionSquad factory SSE stream and returns once the run becomes `completed`, `error`, `cancelled`, or `paused`.
+
+`msq_get_factory_result` returns only the final run output in `result.carryPayload`. That payload may be plain text or a JSON string, so callers must not assume a specific format.
+
+Factory schedule notes:
+
+- `timesToRun` uses backend UTC storage shape: `[{ "hour": 19, "minute": 15 }]`
+- `msq_create_factory_schedule` defaults to `repeatInterval: "once"` and `status: "enabled"` when omitted by the caller and backend
+- weekly schedules require `daysOfWeek`
+- monthly schedules require `dayOfMonth`
 
 ## File Upload and Download Notes
 
