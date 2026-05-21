@@ -605,6 +605,34 @@ async function fetchFactoryRunRecord(
   return parseFactoryRunResponse(response)
 }
 
+async function fetchFactorySchedules(
+  client: MissionSquadClient,
+): Promise<FactoryScheduleRecord[]> {
+  const response = await client.requestJson({
+    method: 'GET',
+    path: 'core/factory-schedules',
+  })
+
+  return parseFactoryScheduleListResponse(response)
+}
+
+function assertValidEffectiveFactoryScheduleUpdate(
+  existing: FactoryScheduleRecord | null,
+  update: z.infer<typeof FactoryScheduleUpdateSchema>,
+): void {
+  const effectiveRepeatInterval = update.repeatInterval ?? existing?.repeatInterval
+  const effectiveDaysOfWeek = update.daysOfWeek ?? existing?.daysOfWeek
+  const effectiveDayOfMonth = update.dayOfMonth ?? existing?.dayOfMonth
+
+  if (effectiveRepeatInterval === 'weekly' && (!effectiveDaysOfWeek || effectiveDaysOfWeek.length === 0)) {
+    throw new Error('daysOfWeek is required for weekly schedules')
+  }
+
+  if (effectiveRepeatInterval === 'monthly' && effectiveDayOfMonth === undefined) {
+    throw new Error('dayOfMonth is required for monthly schedules')
+  }
+}
+
 function parseSseJsonData(data: string): UnknownRecord | null {
   if (data === '[DONE]') {
     return { type: '[DONE]' }
@@ -1396,8 +1424,8 @@ const msqTools = [
         method: 'GET',
         path: `core/factories/${encodePathSegment(args.factoryId)}/runs`,
         query: {
-          limit: args.limit ?? 20,
-          offset: args.offset ?? 0,
+          limit: args.limit,
+          offset: args.offset,
         },
       })
 
@@ -1451,8 +1479,8 @@ const msqTools = [
         method: 'GET',
         path: `core/factory-runs/${encodePathSegment(args.runId)}/steps`,
         query: {
-          limit: args.limit ?? 50,
-          offset: args.offset ?? 0,
+          limit: args.limit,
+          offset: args.offset,
         },
       })
 
@@ -1559,9 +1587,19 @@ const msqTools = [
     name: 'msq_update_factory_schedule',
     description:
       'Update an existing factory schedule by id. '
-      + 'If you change the cadence to weekly or monthly, provide the matching calendar fields in the same request.',
+      + 'Cadence fields are validated against the effective merged schedule state, so clearing weekly/monthly calendar fields is rejected when it would make the saved schedule invalid.',
     parameters: FactoryScheduleUpdateSchema,
     run: async (client, args) => {
+      if (
+        args.repeatInterval !== undefined
+        || args.daysOfWeek !== undefined
+        || args.dayOfMonth !== undefined
+      ) {
+        const schedules = await fetchFactorySchedules(client)
+        const existing = schedules.find((schedule) => schedule.id === args.id) ?? null
+        assertValidEffectiveFactoryScheduleUpdate(existing, args)
+      }
+
       const { id, ...body } = args
       const response = await client.requestJson({
         method: 'PUT',

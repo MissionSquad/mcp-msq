@@ -720,15 +720,11 @@ describe('MissionSquad factory tools', () => {
     const updatePayload = {
       id: 'sched-123',
       status: 'disabled' as const,
-      repeatInterval: 'weekly' as const,
-      daysOfWeek: [1, 2, 3, 4, 5],
     }
     expect(await callTool('msq_update_factory_schedule', updatePayload)).toEqual({ schedule: updatedSchedule })
     expect(getRequestAt(fetchMock, 2).url.pathname).toBe('/v1/core/factory-schedules/sched-123')
     expect(JSON.parse(String(getRequestAt(fetchMock, 2).init.body))).toEqual({
       status: 'disabled',
-      repeatInterval: 'weekly',
-      daysOfWeek: [1, 2, 3, 4, 5],
     })
 
     expect(await callTool('msq_delete_factory_schedule', { id: 'sched-123' })).toEqual({ success: true })
@@ -746,9 +742,33 @@ describe('MissionSquad factory tools', () => {
       repeatInterval: 'weekly',
     })).rejects.toThrow('daysOfWeek is required for weekly schedules')
 
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      data: [
+        buildFactoryScheduleRecord('sched-123'),
+      ],
+    }))
+
     await expect(callTool('msq_update_factory_schedule', {
       id: 'sched-123',
+      daysOfWeek: [],
+    })).rejects.toThrow('daysOfWeek is required for weekly schedules')
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      data: [
+        {
+          ...buildFactoryScheduleRecord('sched-456'),
+          repeatInterval: 'weekly',
+          daysOfWeek: [1, 2, 3, 4, 5],
+          dayOfMonth: undefined,
+        },
+      ],
+    }))
+
+    await expect(callTool('msq_update_factory_schedule', {
+      id: 'sched-456',
       repeatInterval: 'monthly',
-    })).rejects.toThrow('dayOfMonth is required when repeatInterval is monthly')
+    })).rejects.toThrow('dayOfMonth is required for monthly schedules')
   })
 })

@@ -374,23 +374,7 @@ export const FactoryScheduleCreateSchema = FactoryScheduleBodySchema.superRefine
 
 export const FactoryScheduleUpdateSchema = FactoryScheduleIdSchema.merge(
   FactoryScheduleBodySchema.partial(),
-).superRefine((data, ctx) => {
-  if (data.repeatInterval === 'weekly' && (!data.daysOfWeek || data.daysOfWeek.length === 0)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'daysOfWeek is required when repeatInterval is weekly',
-      path: ['daysOfWeek'],
-    })
-  }
-
-  if (data.repeatInterval === 'monthly' && data.dayOfMonth === undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'dayOfMonth is required when repeatInterval is monthly',
-      path: ['dayOfMonth'],
-    })
-  }
-})
+)
 
 export const ScrapeUrlSchema = z.object({
   url: z.string().url(),
