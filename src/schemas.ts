@@ -184,6 +184,214 @@ export const WorkflowRunCreateSchema = z.object({
   ),
 })
 
+const FactoryTransitionSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('next').describe('Continue to the next step in sequence.'),
+  }),
+  z.object({
+    kind: z.literal('stop').describe('Stop the factory after this step completes.'),
+  }),
+  z.object({
+    kind: z.literal('loop_to_index').describe('Jump back to a specific step index after this step completes.'),
+    targetIndex: z.number().int().min(0).describe('Zero-based step index to loop back to.'),
+  }),
+])
+
+const FactoryAgentRefSchema = z.object({
+  agentId: NonEmptyString.describe('Agent id to invoke for this step.'),
+  promptOverride: z.string().optional().describe(
+    'Optional prompt override to prepend before the incoming carry payload for this step.'
+  ),
+})
+
+const FactoryWorkflowRefSchema = z.object({
+  workflowConfigId: NonEmptyString.describe('Workflow config id to invoke for this step.'),
+  payloadSchema: z.record(z.unknown()).optional().describe(
+    'Optional JSON schema object used by MissionSquad to validate and possibly repair the carry payload before starting the workflow.'
+  ),
+  fixerAgentId: NonEmptyString.optional().describe(
+    'Optional fixer-agent id used to repair invalid workflow payloads before the workflow step runs.'
+  ),
+  maxRepairAttempts: z.number().int().min(0).max(5).optional().describe(
+    'Maximum fixer-agent repair attempts. Defaults to 0 unless a fixer agent is configured.'
+  ),
+})
+
+const BaseFactoryStepSchema = z.object({
+  stepId: NonEmptyString.optional().describe(
+    'Optional step id. Omit to let MissionSquad generate one while normalizing the factory config.'
+  ),
+  index: z.number().int().min(0).optional().describe(
+    'Optional zero-based step index. The backend rewrites indices sequentially, so this is mainly informative.'
+  ),
+  name: z.string().optional().describe(
+    'Optional step name. Defaults to "Step N" when omitted by the backend.'
+  ),
+  limitStepInvocations: z.boolean().optional().describe(
+    'If true, MissionSquad stops the factory once this step reaches maxStepInvocations.'
+  ),
+  maxStepInvocations: z.number().int().positive().optional().describe(
+    'Per-step invocation cap. Defaults to 1 when uncapped or omitted.'
+  ),
+  transition: FactoryTransitionSchema.describe('What the factory should do after this step completes.'),
+})
+
+const FactoryAgentStepSchema = BaseFactoryStepSchema.extend({
+  kind: z.literal('agent').describe('Run a MissionSquad agent for this step.'),
+  agentRef: FactoryAgentRefSchema.describe('Agent execution target for this step.'),
+  workflowRef: z.never().optional(),
+})
+
+const FactoryWorkflowStepSchema = BaseFactoryStepSchema.extend({
+  kind: z.literal('workflow').describe('Run a MissionSquad workflow for this step.'),
+  workflowRef: FactoryWorkflowRefSchema.describe('Workflow execution target for this step.'),
+  agentRef: z.never().optional(),
+})
+
+const FactoryStepInputSchema = z.discriminatedUnion('kind', [
+  FactoryAgentStepSchema,
+  FactoryWorkflowStepSchema,
+]).describe(
+  'Factory step definition. Agent steps require agentRef only. Workflow steps require workflowRef only.'
+)
+
+export const FactoryIdSchema = z.object({
+  id: NonEmptyString.describe('Factory config id.'),
+})
+
+export const FactoryCreateSchema = z.object({
+  id: NonEmptyString.optional().describe(
+    'Optional factory config id. Omit to let MissionSquad generate one.'
+  ),
+  name: NonEmptyString.describe('Factory name.'),
+  description: z.string().optional().describe('Optional human-readable description of the factory.'),
+  steps: z.array(FactoryStepInputSchema).min(1).max(50).describe(
+    'Full ordered step list for the factory. Send the complete desired step array.'
+  ),
+  continuous: z.boolean().optional().describe(
+    'If true, the factory is intended to loop. Defaults to false.'
+  ),
+  limitTotalInvocations: z.boolean().optional().describe(
+    'If true, MissionSquad enforces a cap on total completed step invocations or completed cycles.'
+  ),
+  maxTotalInvocations: z.number().int().positive().optional().describe(
+    'Overall invocation cap. Defaults to 10 when the cap is not explicitly constrained.'
+  ),
+})
+
+export const FactoryUpdateSchema = FactoryIdSchema.merge(
+  FactoryCreateSchema.omit({ id: true }).partial(),
+)
+
+export const FactoryRunIdSchema = z.object({
+  runId: NonEmptyString.describe('Factory run id.'),
+})
+
+export const FactoryRunCreateSchema = z.object({
+  factoryConfigId: NonEmptyString.describe('Factory config id to execute.'),
+  initialCarryPayload: z.string().optional().describe(
+    'Optional initial carry payload string for the run. If omitted, MissionSquad uses an empty string.'
+  ),
+})
+
+export const FactoryRunsListSchema = z.object({
+  factoryId: NonEmptyString.describe('Factory config id whose runs should be listed.'),
+  limit: z.number().int().positive().max(100).default(20).describe(
+    'Maximum number of runs to return. Defaults to 20 and is clamped to 100.'
+  ),
+  offset: z.number().int().min(0).default(0).describe(
+    'Zero-based offset into the factory run history. Defaults to 0.'
+  ),
+})
+
+export const FactoryStepIdsSchema = z.object({
+  runId: NonEmptyString.describe('Factory run id.'),
+  stepRunId: NonEmptyString.describe('Factory step run id.'),
+})
+
+export const FactoryRunStepsListSchema = z.object({
+  runId: NonEmptyString.describe('Factory run id whose step executions should be listed.'),
+  limit: z.number().int().positive().max(100).default(50).describe(
+    'Maximum number of step runs to return. Defaults to 50 and is clamped to 100.'
+  ),
+  offset: z.number().int().min(0).default(0).describe(
+    'Zero-based offset into the factory step run history. Defaults to 0.'
+  ),
+})
+
+const FactoryScheduleTimeSchema = z.object({
+  hour: z.number().int().min(0).max(23).describe('UTC hour, from 0 through 23.'),
+  minute: z.number().int().min(0).max(59).describe('UTC minute, from 0 through 59.'),
+})
+
+const FactoryScheduleBodySchema = z.object({
+  factoryConfigId: NonEmptyString.describe('Factory config id this schedule should execute.'),
+  label: z.string().optional().describe('Optional human-readable label for the schedule.'),
+  startDate: z.number().optional().describe(
+    'Unix epoch milliseconds for when the schedule becomes active. Defaults to Date.now() on the backend.'
+  ),
+  timesToRun: z.array(FactoryScheduleTimeSchema).min(1).describe(
+    'One or more UTC times to run the factory. This is required and uses backend UTC storage format.'
+  ),
+  repeatInterval: z.enum(['once', 'daily', 'weekly', 'monthly']).optional().describe(
+    'Schedule cadence. Defaults to "once".'
+  ),
+  daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().describe(
+    'Required for weekly schedules. Uses JavaScript day numbering: 0=Sunday through 6=Saturday.'
+  ),
+  dayOfMonth: z.number().int().min(1).max(31).optional().describe(
+    'Required for monthly schedules. Day number within the month.'
+  ),
+  status: z.enum(['enabled', 'disabled', 'running']).optional().describe(
+    'Schedule status. Defaults to "enabled".'
+  ),
+  initialCarryPayload: z.string().optional().describe(
+    'Optional initial carry payload string passed to each scheduled factory run.'
+  ),
+})
+
+export const FactoryScheduleIdSchema = z.object({
+  id: NonEmptyString.describe('Factory schedule id.'),
+})
+
+export const FactoryScheduleCreateSchema = FactoryScheduleBodySchema.superRefine((data, ctx) => {
+  if (data.repeatInterval === 'weekly' && (!data.daysOfWeek || data.daysOfWeek.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'daysOfWeek is required for weekly schedules',
+      path: ['daysOfWeek'],
+    })
+  }
+
+  if (data.repeatInterval === 'monthly' && data.dayOfMonth === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'dayOfMonth is required for monthly schedules',
+      path: ['dayOfMonth'],
+    })
+  }
+})
+
+export const FactoryScheduleUpdateSchema = FactoryScheduleIdSchema.merge(
+  FactoryScheduleBodySchema.partial(),
+).superRefine((data, ctx) => {
+  if (data.repeatInterval === 'weekly' && (!data.daysOfWeek || data.daysOfWeek.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'daysOfWeek is required when repeatInterval is weekly',
+      path: ['daysOfWeek'],
+    })
+  }
+
+  if (data.repeatInterval === 'monthly' && data.dayOfMonth === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'dayOfMonth is required when repeatInterval is monthly',
+      path: ['dayOfMonth'],
+    })
+  }
+})
+
 export const ScrapeUrlSchema = z.object({
   url: z.string().url(),
 })
