@@ -17,6 +17,8 @@ interface EventStreamRequestOptions {
   path: string
   query?: Record<string, string | number | boolean | undefined>
   headers?: Record<string, string | undefined>
+  method?: HttpMethod
+  body?: unknown
 }
 
 interface FileUploadOptions {
@@ -190,13 +192,22 @@ export class MissionSquadClient {
   ): Promise<void> {
     const url = this.buildUrl(options.path, options.query)
 
+    const headers: Record<string, string> = {
+      Accept: 'text/event-stream',
+      'x-api-key': this.requestConfig.apiKey,
+      ...this.compactHeaders(options.headers),
+    }
+
+    let body: string | undefined
+    if (options.body !== undefined) {
+      headers['Content-Type'] = 'application/json'
+      body = JSON.stringify(options.body)
+    }
+
     const response = await this.fetchWithoutTimeout(url, {
-      method: 'GET',
-      headers: {
-        Accept: 'text/event-stream',
-        'x-api-key': this.requestConfig.apiKey,
-        ...this.compactHeaders(options.headers),
-      },
+      method: options.method ?? 'GET',
+      headers,
+      body,
     })
 
     if (!response.ok) {
