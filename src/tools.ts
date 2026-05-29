@@ -646,6 +646,218 @@ function parseSseJsonData(data: string): UnknownRecord | null {
   }
 }
 
+interface StreamedToolCall {
+  index: number
+  id?: string
+  type?: string
+  function: { name: string; arguments: string }
+}
+
+interface StreamedChoice {
+  index: number
+  role: string | null
+  content: string | null
+  refusal: string | null
+  finishReason: string | null
+  toolCalls: Map<number, StreamedToolCall>
+}
+
+function accumulateStreamedToolCall(
+  toolCalls: Map<number, StreamedToolCall>,
+  rawToolCall: unknown,
+): void {
+  if (!isRecord(rawToolCall)) {
+    return
+  }
+
+  const index = typeof rawToolCall.index === 'number' ? rawToolCall.index : toolCalls.size
+  let toolCall = toolCalls.get(index)
+  if (!toolCall) {
+    toolCall = { index, function: { name: '', arguments: '' } }
+    toolCalls.set(index, toolCall)
+  }
+
+  if (typeof rawToolCall.id === 'string') {
+    toolCall.id = rawToolCall.id
+  }
+  if (typeof rawToolCall.type === 'string') {
+    toolCall.type = rawToolCall.type
+  }
+
+  const fn = isRecord(rawToolCall.function) ? rawToolCall.function : undefined
+  if (fn) {
+    if (typeof fn.name === 'string') {
+      toolCall.function.name += fn.name
+    }
+    if (typeof fn.arguments === 'string') {
+      toolCall.function.arguments += fn.arguments
+    }
+  }
+}
+
+function accumulateStreamedChoice(
+  choices: Map<number, StreamedChoice>,
+  rawChoice: unknown,
+): void {
+  if (!isRecord(rawChoice)) {
+    return
+  }
+
+  const index = typeof rawChoice.index === 'number' ? rawChoice.index : 0
+  let choice = choices.get(index)
+  if (!choice) {
+    choice = {
+      index,
+      role: null,
+      content: null,
+      refusal: null,
+      finishReason: null,
+      toolCalls: new Map(),
+    }
+    choices.set(index, choice)
+  }
+
+  const delta = isRecord(rawChoice.delta) ? rawChoice.delta : undefined
+  if (delta) {
+    if (typeof delta.role === 'string') {
+      choice.role = delta.role
+    }
+    if (typeof delta.content === 'string') {
+      choice.content = (choice.content ?? '') + delta.content
+    }
+    if (typeof delta.refusal === 'string') {
+      choice.refusal = (choice.refusal ?? '') + delta.refusal
+    }
+    if (Array.isArray(delta.tool_calls)) {
+      for (const rawToolCall of delta.tool_calls) {
+        accumulateStreamedToolCall(choice.toolCalls, rawToolCall)
+      }
+    }
+  }
+
+  if (typeof rawChoice.finish_reason === 'string') {
+    choice.finishReason = rawChoice.finish_reason
+  }
+}
+
+// Streams an OpenAI-compatible chat completion and assembles the streamed
+// chunks into a single non-streaming completion object. Streaming keeps the
+// connection alive for long-running generations so the request does not hit
+// the HTTP timeout, mirroring how the workflow/factory run-status tools wait
+// on a server-sent event stream before returning.
+async function streamChatCompletion(
+  client: MissionSquadClient,
+  body: UnknownRecord,
+  headers: Record<string, string | undefined>,
+): Promise<UnknownRecord> {
+  const choices = new Map<number, StreamedChoice>()
+  let completionId: string | undefined
+  let created: number | undefined
+  let model: string | undefined
+  let systemFingerprint: string | undefined
+  let serviceTier: string | undefined
+  let usage: unknown
+  let streamError: string | undefined
+
+  await client.consumeServerSentEvents(
+    {
+      method: 'POST',
+      path: 'chat/completions',
+      headers,
+      body: { ...body, stream: true },
+    },
+    (event) => {
+      const parsed = parseSseJsonData(event.data)
+      if (!parsed || parsed.type === '[DONE]') {
+        return
+      }
+
+      if (parsed.error !== undefined && parsed.error !== null) {
+        streamError = typeof parsed.error === 'string'
+          ? parsed.error
+          : JSON.stringify(parsed.error)
+        return
+      }
+
+      if (typeof parsed.id === 'string') {
+        completionId = parsed.id
+      }
+      if (typeof parsed.created === 'number') {
+        created = parsed.created
+      }
+      if (typeof parsed.model === 'string') {
+        model = parsed.model
+      }
+      if (typeof parsed.system_fingerprint === 'string') {
+        systemFingerprint = parsed.system_fingerprint
+      }
+      if (typeof parsed.service_tier === 'string') {
+        serviceTier = parsed.service_tier
+      }
+      if (isRecord(parsed.usage)) {
+        usage = parsed.usage
+      }
+
+      if (Array.isArray(parsed.choices)) {
+        for (const rawChoice of parsed.choices) {
+          accumulateStreamedChoice(choices, rawChoice)
+        }
+      }
+    },
+  )
+
+  if (streamError) {
+    throw new Error(`MissionSquad chat completion failed: ${streamError}`)
+  }
+
+  const assembledChoices = Array.from(choices.values())
+    .sort((a, b) => a.index - b.index)
+    .map((choice) => {
+      const message: UnknownRecord = {
+        role: choice.role ?? 'assistant',
+        content: choice.content,
+      }
+      if (choice.refusal !== null) {
+        message.refusal = choice.refusal
+      }
+      if (choice.toolCalls.size > 0) {
+        message.tool_calls = Array.from(choice.toolCalls.values())
+          .sort((a, b) => a.index - b.index)
+          .map((toolCall) => ({
+            id: toolCall.id,
+            type: toolCall.type ?? 'function',
+            function: {
+              name: toolCall.function.name,
+              arguments: toolCall.function.arguments,
+            },
+          }))
+      }
+
+      return {
+        index: choice.index,
+        message,
+        finish_reason: choice.finishReason,
+      }
+    })
+
+  const result: UnknownRecord = {
+    id: completionId ?? null,
+    object: 'chat.completion',
+    created: created ?? Math.floor(Date.now() / 1000),
+    model: model ?? (typeof body.model === 'string' ? body.model : null),
+    choices: assembledChoices,
+    usage: usage ?? null,
+  }
+  if (systemFingerprint !== undefined) {
+    result.system_fingerprint = systemFingerprint
+  }
+  if (serviceTier !== undefined) {
+    result.service_tier = serviceTier
+  }
+
+  return result
+}
+
 function extractLatestAssistantMessage(
   messages: WorkflowRunMessageRecord[] | undefined,
 ): WorkflowRunMessageRecord | undefined {
@@ -1092,12 +1304,7 @@ const msqTools = [
       delete body.xClientId
       delete body.xSessionId
 
-      return client.requestJson({
-        method: 'POST',
-        path: 'chat/completions',
-        headers,
-        body,
-      })
+      return streamChatCompletion(client, body, headers)
     },
   }),
   defineTool({

@@ -159,7 +159,7 @@ export const WorkflowIdSchema = z.object({
 export const WorkflowCreateSchema = z.object({
   id: NonEmptyString.optional().describe('Optional workflow config id. If omitted, the server generates one.'),
   name: z.string().optional().describe('Workflow name. Defaults to "Untitled Workflow".'),
-  mainAgentId: z.string().nullable().optional().describe('Main agent id for the workflow.'),
+  mainAgentName: z.string().nullable().optional().describe('Name of the agent to run as the workflow main agent. The server resolves the name to the underlying agent id/ref. Pass null to clear the main agent.'),
   mainPrompt: z.string().optional().describe('Main prompt containing helper agent patterns.'),
   dataPayload: z.string().optional().describe('JSON string containing workflow data payload. Must be valid JSON if provided.'),
   concurrency: z.number().int().positive().optional().describe('Maximum concurrent helper executions.'),
