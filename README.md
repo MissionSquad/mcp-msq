@@ -371,7 +371,7 @@ Create a workflow:
 ```ts
 await client.callTool('msq_create_workflow', {
   name: 'Research Workflow',
-  mainAgentId: 'agent_main_123',
+  mainAgentName: 'Coordinator',
   mainPrompt: 'Summarize findings from <collector|#|sourceA> and <collector|#|sourceB>',
   dataPayload: '{"sourceA":"https://a.example","sourceB":"https://b.example"}',
   concurrency: 2,

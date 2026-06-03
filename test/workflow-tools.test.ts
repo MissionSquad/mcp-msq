@@ -387,7 +387,7 @@ describe('MissionSquad workflow tools', () => {
     const payload = {
       id: 'wf-created',
       name: 'Research Workflow',
-      mainAgentId: 'agent-main',
+      mainAgentName: 'Coordinator',
       mainPrompt: 'Prompt',
       dataPayload: '{"source":"https://example.com"}',
       concurrency: 2,
@@ -441,6 +441,7 @@ describe('MissionSquad workflow tools', () => {
     const result = await callTool('msq_update_workflow', {
       id: 'wf-updated',
       name: 'Updated Workflow',
+      mainAgentName: 'Coordinator',
       mainPrompt: 'Updated prompt',
     })
     const { url, init } = getRequest(fetchMock)
@@ -450,6 +451,7 @@ describe('MissionSquad workflow tools', () => {
     expect(init.method).toBe('PUT')
     expect(requestBody).toEqual({
       name: 'Updated Workflow',
+      mainAgentName: 'Coordinator',
       mainPrompt: 'Updated prompt',
     })
     expect(requestBody).not.toHaveProperty('id')
