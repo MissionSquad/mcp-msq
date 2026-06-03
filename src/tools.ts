@@ -83,7 +83,7 @@ const WorkflowConfigRecordSchema = z.object({
   id: z.string(),
   userId: z.string(),
   name: z.string(),
-  mainAgentId: z.string().nullable(),
+  mainAgentId: z.string().nullable().optional(),
   mainAgentRef: z.string().nullable().optional(),
   mainPrompt: z.string(),
   dataPayload: z.string(),
@@ -196,7 +196,7 @@ const FactoryAgentRefRecordSchema = z.object({
   agentId: z.string().optional(),
   promptOverride: z.string().optional(),
 }).passthrough().refine((value) => value.agentRef || value.agentId, {
-  message: 'Factory agentRef requires agentRef or agentId',
+  message: 'Either agentRef or agentId must be provided.',
 })
 
 const FactoryWorkflowRefRecordSchema = z.object({

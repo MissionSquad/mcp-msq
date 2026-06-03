@@ -213,7 +213,7 @@ const FactoryAgentRefSchema = z.object({
     'Optional prompt override to prepend before the incoming carry payload for this step.'
   ),
 }).refine((value) => value.agentRef || value.agentId, {
-  message: 'agentRef requires agentRef or agentId',
+  message: 'Either agentRef or agentId must be provided.',
 })
 
 const FactoryWorkflowRefSchema = z.object({
