@@ -504,6 +504,65 @@ describe('MissionSquad factory tools', () => {
     expect(createResult).toEqual({ factory: createdFactory })
   })
 
+  it('accepts JSON-stringified factory step objects and sends parsed steps to the API', async () => {
+    const createdFactory = buildCanonicalRefFactoryConfig('fac-stringified-created')
+    const updatedFactory = buildCanonicalRefFactoryConfig('fac-stringified-updated')
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: createdFactory }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: updatedFactory }))
+
+    const steps = [
+      {
+        stepId: 'step-agent',
+        index: 0,
+        name: 'Agent step',
+        kind: 'agent' as const,
+        agentRef: { agentRef: 'agent/agent-1' },
+        transition: { kind: 'next' as const },
+      },
+      {
+        stepId: 'step-workflow',
+        index: 1,
+        name: 'Workflow step',
+        kind: 'workflow' as const,
+        workflowRef: {
+          workflowConfigId: 'wf-123',
+          payloadSchema: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+            },
+            required: ['ok'],
+            additionalProperties: true,
+          },
+        },
+        transition: { kind: 'stop' as const },
+      },
+    ]
+
+    const createResult = await callTool('msq_create_factory', {
+      name: 'Factory with stringified steps',
+      steps: steps.map((step) => JSON.stringify(step)),
+    })
+    const createRequest = getRequestAt(fetchMock, 0)
+
+    expect(createRequest.url.pathname).toBe('/v1/core/factories')
+    expect(JSON.parse(String(createRequest.init.body))).toEqual({
+      name: 'Factory with stringified steps',
+      steps,
+    })
+    expect(createResult).toEqual({ factory: createdFactory })
+
+    const updateResult = await callTool('msq_update_factory', {
+      id: 'fac-stringified-updated',
+      steps: steps.map((step) => JSON.stringify(step)),
+    })
+    const updateRequest = getRequestAt(fetchMock, 1)
+
+    expect(updateRequest.url.pathname).toBe('/v1/core/factories/fac-stringified-updated')
+    expect(JSON.parse(String(updateRequest.init.body))).toEqual({ steps })
+    expect(updateResult).toEqual({ factory: updatedFactory })
+  })
+
   it('deletes factories and preserves the raw API response', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, message: 'Deleted' }))
 
