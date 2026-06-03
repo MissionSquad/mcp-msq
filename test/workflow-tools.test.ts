@@ -387,7 +387,7 @@ describe('MissionSquad workflow tools', () => {
     const payload = {
       id: 'wf-created',
       name: 'Research Workflow',
-      mainAgentName: 'Coordinator',
+      mainAgentId: 'agent-main',
       mainPrompt: 'Prompt',
       dataPayload: '{"source":"https://example.com"}',
       concurrency: 2,
