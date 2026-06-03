@@ -102,6 +102,67 @@ function buildFactoryConfig(id: string = 'fac-123') {
   }
 }
 
+function buildCanonicalRefFactoryConfig(id: string = 'fac-canonical') {
+  return {
+    ...buildFactoryConfig(id),
+    name: 'Risk Brief Factory',
+    steps: [
+      {
+        stepId: 'step-1',
+        index: 0,
+        name: 'Collect context',
+        kind: 'agent' as const,
+        limitStepInvocations: false,
+        agentRef: {
+          agentRef: 'agent/FVLA1U4uv6H6zH6fiiwd0',
+        },
+        maxStepInvocations: 1,
+        transition: {
+          kind: 'next' as const,
+        },
+      },
+      {
+        stepId: 'step-2',
+        index: 1,
+        name: 'Run workflow',
+        kind: 'workflow' as const,
+        limitStepInvocations: false,
+        workflowRef: {
+          workflowConfigId: 'wf-123',
+          payloadSchema: {
+            type: 'object',
+            properties: {
+              input: { type: 'string' },
+            },
+            required: ['input'],
+            additionalProperties: false,
+          },
+          fixerAgentRef: 'agent/fixer-123',
+          maxRepairAttempts: 1,
+        },
+        maxStepInvocations: 1,
+        transition: {
+          kind: 'next' as const,
+        },
+      },
+      {
+        stepId: 'step-3',
+        index: 2,
+        name: 'Review workflow output',
+        kind: 'agent' as const,
+        limitStepInvocations: false,
+        agentRef: {
+          agentRef: 'agent/YK_VQ0cZBRzwgdBCsAhrk',
+        },
+        maxStepInvocations: 1,
+        transition: {
+          kind: 'stop' as const,
+        },
+      },
+    ],
+  }
+}
+
 function buildFactoryRunRecord(
   status: 'queued' | 'running' | 'paused' | 'completed' | 'cancelled' | 'error',
   overrides?: Partial<Record<string, unknown>>,
@@ -353,6 +414,15 @@ describe('MissionSquad factory tools', () => {
     expect(result).toEqual({ factory })
   })
 
+  it('reads factory configs that use canonical agent refs instead of legacy agent ids', async () => {
+    const factory = buildCanonicalRefFactoryConfig()
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: [factory] }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: factory }))
+
+    await expect(callTool('msq_list_factories', {})).resolves.toEqual({ factories: [factory] })
+    await expect(callTool('msq_get_factory', { id: factory.id })).resolves.toEqual({ factory })
+  })
+
   it('creates and updates factories with the verified request shape', async () => {
     const createdFactory = buildFactoryConfig('fac-created')
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: createdFactory }))
@@ -395,6 +465,43 @@ describe('MissionSquad factory tools', () => {
       continuous: true,
     })
     expect(updateResult).toEqual({ factory: updatedFactory })
+  })
+
+  it('creates factories with canonical agent refs and workflow fixer refs', async () => {
+    const createdFactory = buildCanonicalRefFactoryConfig('fac-created-canonical')
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: createdFactory }))
+
+    const createPayload = {
+      name: 'Factory created with canonical refs',
+      steps: [
+        {
+          kind: 'agent' as const,
+          name: 'Agent step',
+          maxStepInvocations: 1,
+          transition: { kind: 'next' as const },
+          agentRef: { agentRef: 'agent/agent-1' },
+        },
+        {
+          kind: 'workflow' as const,
+          name: 'Workflow step',
+          maxStepInvocations: 1,
+          transition: { kind: 'stop' as const },
+          workflowRef: {
+            workflowConfigId: 'wf-123',
+            fixerAgentRef: 'agent/fixer-1',
+            maxRepairAttempts: 1,
+          },
+        },
+      ],
+    }
+
+    const createResult = await callTool('msq_create_factory', createPayload)
+    const createRequest = getRequestAt(fetchMock, 0)
+
+    expect(createRequest.url.pathname).toBe('/v1/core/factories')
+    expect(createRequest.init.method).toBe('POST')
+    expect(JSON.parse(String(createRequest.init.body))).toEqual(createPayload)
+    expect(createResult).toEqual({ factory: createdFactory })
   })
 
   it('deletes factories and preserves the raw API response', async () => {

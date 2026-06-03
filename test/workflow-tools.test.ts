@@ -61,6 +61,7 @@ function buildWorkflowConfig(id: string) {
     userId: 'user-1',
     name: `Workflow ${id}`,
     mainAgentId: 'agent-main',
+    mainAgentRef: 'agent/agent-main',
     mainPrompt: 'Prompt',
     dataPayload: '{"source":"https://example.com"}',
     concurrency: 2,
@@ -69,6 +70,14 @@ function buildWorkflowConfig(id: string) {
     failureInstruction: 'Continue carefully',
     createdAt: 100,
     updatedAt: 200,
+  }
+}
+
+function buildSharedMainAgentWorkflowConfig(id: string) {
+  return {
+    ...buildWorkflowConfig(id),
+    mainAgentId: null,
+    mainAgentRef: 'shared/research-team/risk-brief',
   }
 }
 
@@ -267,6 +276,15 @@ describe('MissionSquad workflow tools', () => {
     expect(result).toEqual({ workflows })
   })
 
+  it('lists workflows with canonical shared main agent refs', async () => {
+    const workflows = [buildSharedMainAgentWorkflowConfig('wf-shared')]
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: workflows }))
+
+    const result = await callTool('msq_list_workflows', {})
+
+    expect(result).toEqual({ workflows })
+  })
+
   it('lists installed and enabled servers in a compact shape', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({
       success: true,
@@ -383,6 +401,35 @@ describe('MissionSquad workflow tools', () => {
 
     expect(url.pathname).toBe('/v1/core/workflows')
     expect(init.method).toBe('POST')
+    expect(JSON.parse(String(init.body))).toEqual({
+      id: 'wf-created',
+      name: 'Research Workflow',
+      mainAgentRef: 'agent/agent-main',
+      mainPrompt: 'Prompt',
+      dataPayload: '{"source":"https://example.com"}',
+      concurrency: 2,
+      delimiter: '|#|',
+      failureMessage: 'Helper failed',
+      failureInstruction: 'Continue carefully',
+    })
+    expect(result).toEqual({ workflow })
+  })
+
+  it('creates a workflow with a canonical shared main agent ref', async () => {
+    const workflow = buildSharedMainAgentWorkflowConfig('wf-shared-created')
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: workflow }))
+
+    const payload = {
+      id: 'wf-shared-created',
+      name: 'Shared Main Workflow',
+      mainAgentRef: 'shared/research-team/risk-brief',
+      mainPrompt: 'Prompt',
+      dataPayload: '{}',
+    }
+
+    const result = await callTool('msq_create_workflow', payload)
+    const { init } = getRequest(fetchMock)
+
     expect(JSON.parse(String(init.body))).toEqual(payload)
     expect(result).toEqual({ workflow })
   })
@@ -406,6 +453,26 @@ describe('MissionSquad workflow tools', () => {
       mainPrompt: 'Updated prompt',
     })
     expect(requestBody).not.toHaveProperty('id')
+    expect(result).toEqual({ workflow })
+  })
+
+  it('translates legacy null mainAgentId updates into canonical mainAgentRef clearing', async () => {
+    const workflow = {
+      ...buildWorkflowConfig('wf-cleared'),
+      mainAgentId: null,
+      mainAgentRef: null,
+    }
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: workflow }))
+
+    const result = await callTool('msq_update_workflow', {
+      id: 'wf-cleared',
+      mainAgentId: null,
+    })
+    const { init } = getRequest(fetchMock)
+
+    expect(JSON.parse(String(init.body))).toEqual({
+      mainAgentRef: null,
+    })
     expect(result).toEqual({ workflow })
   })
 
