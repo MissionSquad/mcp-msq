@@ -159,7 +159,12 @@ export const WorkflowIdSchema = z.object({
 export const WorkflowCreateSchema = z.object({
   id: NonEmptyString.optional().describe('Optional workflow config id. If omitted, the server generates one.'),
   name: z.string().optional().describe('Workflow name. Defaults to "Untitled Workflow".'),
-  mainAgentName: z.string().nullable().optional().describe('Name of the agent to run as the workflow main agent. The server resolves the name to the underlying agent id/ref. Pass null to clear the main agent.'),
+  mainAgentRef: z.string().nullable().optional().describe(
+    'Canonical main agent ref for the workflow. Use agent/<agentId> for owned agents, shared/<ownerUsername>/<slug> for shared agents, or null to clear.'
+  ),
+  mainAgentId: z.string().nullable().optional().describe(
+    'Legacy owned main agent id. Prefer mainAgentRef. MCP translates this to agent/<mainAgentId> before calling the API.'
+  ),
   mainPrompt: z.string().optional().describe('Main prompt containing helper agent patterns.'),
   dataPayload: z.string().optional().describe('JSON string containing workflow data payload. Must be valid JSON if provided.'),
   concurrency: z.number().int().positive().optional().describe('Maximum concurrent helper executions.'),
@@ -198,10 +203,17 @@ const FactoryTransitionSchema = z.discriminatedUnion('kind', [
 ])
 
 const FactoryAgentRefSchema = z.object({
-  agentId: NonEmptyString.describe('Agent id to invoke for this step.'),
+  agentRef: NonEmptyString.optional().describe(
+    'Canonical agent ref to invoke for this step. Use agent/<agentId> for owned agents or shared/<ownerUsername>/<slug> for shared agents.'
+  ),
+  agentId: NonEmptyString.optional().describe(
+    'Legacy owned agent id to invoke for this step. Prefer agentRef for new configs.'
+  ),
   promptOverride: z.string().optional().describe(
     'Optional prompt override to prepend before the incoming carry payload for this step.'
   ),
+}).refine((value) => value.agentRef || value.agentId, {
+  message: 'agentRef requires agentRef or agentId',
 })
 
 const FactoryWorkflowRefSchema = z.object({
@@ -209,8 +221,11 @@ const FactoryWorkflowRefSchema = z.object({
   payloadSchema: z.record(z.unknown()).optional().describe(
     'Optional JSON schema object used by MissionSquad to validate and possibly repair the carry payload before starting the workflow.'
   ),
+  fixerAgentRef: NonEmptyString.optional().describe(
+    'Optional canonical fixer-agent ref used to repair invalid workflow payloads before the workflow step runs.'
+  ),
   fixerAgentId: NonEmptyString.optional().describe(
-    'Optional fixer-agent id used to repair invalid workflow payloads before the workflow step runs.'
+    'Legacy owned fixer-agent id used to repair invalid workflow payloads before the workflow step runs. Prefer fixerAgentRef for new configs.'
   ),
   maxRepairAttempts: z.number().int().min(0).max(5).optional().describe(
     'Maximum fixer-agent repair attempts. Defaults to 0 unless a fixer agent is configured.'

@@ -84,6 +84,7 @@ const WorkflowConfigRecordSchema = z.object({
   userId: z.string(),
   name: z.string(),
   mainAgentId: z.string().nullable(),
+  mainAgentRef: z.string().nullable().optional(),
   mainPrompt: z.string(),
   dataPayload: z.string(),
   concurrency: z.number(),
@@ -191,13 +192,17 @@ const FactoryStepTransitionSchema = z.discriminatedUnion('kind', [
 ])
 
 const FactoryAgentRefRecordSchema = z.object({
-  agentId: z.string(),
+  agentRef: z.string().optional(),
+  agentId: z.string().optional(),
   promptOverride: z.string().optional(),
-}).passthrough()
+}).passthrough().refine((value) => value.agentRef || value.agentId, {
+  message: 'Factory agentRef requires agentRef or agentId',
+})
 
 const FactoryWorkflowRefRecordSchema = z.object({
   workflowConfigId: z.string(),
   payloadSchema: z.record(z.unknown()).optional(),
+  fixerAgentRef: z.string().optional(),
   fixerAgentId: z.string().optional(),
   maxRepairAttempts: z.number().optional(),
 }).passthrough()
@@ -397,6 +402,28 @@ type FactoryRunRecord = z.infer<typeof FactoryRunRecordSchema>
 type FactoryStepRunRecord = z.infer<typeof FactoryStepRunRecordSchema>
 type FactoryStepHydratedRecord = z.infer<typeof FactoryStepHydratedRecordSchema>
 type FactoryScheduleRecord = z.infer<typeof FactoryScheduleRecordSchema>
+
+type WorkflowConfigWriteInput = z.infer<typeof WorkflowCreateSchema>
+
+function toWorkflowConfigWriteBody(args: WorkflowConfigWriteInput): Omit<WorkflowConfigWriteInput, 'mainAgentId'> {
+  const { mainAgentId, ...body } = args
+  if (body.mainAgentRef !== undefined) {
+    return body
+  }
+  if (typeof mainAgentId === 'string' && mainAgentId.trim().length > 0) {
+    return {
+      ...body,
+      mainAgentRef: `agent/${mainAgentId.trim()}`,
+    }
+  }
+  if (mainAgentId === null) {
+    return {
+      ...body,
+      mainAgentRef: null,
+    }
+  }
+  return body
+}
 
 function parseWorkflowConfigListResponse(payload: unknown): WorkflowConfigRecord[] {
   return WorkflowConfigListResponseSchema.parse(payload).data
@@ -1488,7 +1515,7 @@ const msqTools = [
       const response = await client.requestJson({
         method: 'POST',
         path: 'core/workflows',
-        body: args,
+        body: toWorkflowConfigWriteBody(args),
       })
 
       return mapWorkflow(parseWorkflowConfigResponse(response))
@@ -1503,7 +1530,7 @@ const msqTools = [
       const response = await client.requestJson({
         method: 'PUT',
         path: `core/workflows/${encodePathSegment(id)}`,
-        body,
+        body: toWorkflowConfigWriteBody(body),
       })
 
       return mapWorkflow(parseWorkflowConfigResponse(response))
