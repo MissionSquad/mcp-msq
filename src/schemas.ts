@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 const NonEmptyString = z.string().trim().min(1)
 
-function parseStringifiedObjectInput(value: unknown): unknown {
+function parseStringifiedObjectInput(value: unknown, ctx: z.RefinementCtx): unknown {
   if (typeof value !== 'string') {
     return value
   }
@@ -12,41 +12,51 @@ function parseStringifiedObjectInput(value: unknown): unknown {
     return value
   }
 
+  if (!trimmed.startsWith('{')) {
+    return value
+  }
+
   try {
     const parsed = JSON.parse(trimmed)
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed : value
-  } catch {
-    return value
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Invalid JSON object string: ${error instanceof Error ? error.message : 'Unable to parse JSON.'}`,
+    })
+    return z.NEVER
   }
 }
 
-const MetadataSchema = z.preprocess(parseStringifiedObjectInput, z.record(z.unknown()))
+function stringifiedObjectInput<T extends z.ZodTypeAny>(schema: T): z.ZodPipeline<z.ZodEffects<z.ZodAny, unknown, unknown>, T> {
+  return z.any().transform(parseStringifiedObjectInput).pipe(schema)
+}
+
+const MetadataSchema = stringifiedObjectInput(z.record(z.unknown()))
 
 const MessageRoleSchema = z.enum(['system', 'user', 'assistant', 'tool'])
 
-const ChatMessageSchema = z
-  .preprocess(parseStringifiedObjectInput, z.object({
-    role: MessageRoleSchema,
-    content: z.string(),
-    name: z.string().optional(),
-    tool_call_id: z.string().optional(),
-  }).passthrough())
+const ChatMessageSchema = stringifiedObjectInput(z.object({
+  role: MessageRoleSchema,
+  content: z.string(),
+  name: z.string().optional(),
+  tool_call_id: z.string().optional(),
+}).passthrough())
 
-const OpenAiFunctionToolSchema = z.preprocess(parseStringifiedObjectInput, z.object({
+const OpenAiFunctionToolSchema = stringifiedObjectInput(z.object({
   type: z.literal('function'),
   function: z.object({
     name: NonEmptyString,
     description: z.string().optional(),
-    parameters: z.preprocess(parseStringifiedObjectInput, z.object({}).passthrough()),
+    parameters: stringifiedObjectInput(z.object({}).passthrough()),
   }),
 }))
 
-const OpenAiToolChoiceSchema = z.preprocess(
-  parseStringifiedObjectInput,
+const OpenAiToolChoiceSchema = stringifiedObjectInput(
   z.union([z.string(), z.object({}).passthrough()])
 )
 
-const ChunkingStrategySchema = z.preprocess(parseStringifiedObjectInput, z.union([
+const ChunkingStrategySchema = stringifiedObjectInput(z.union([
   z.object({
     type: z.literal('auto'),
   }),
@@ -58,6 +68,11 @@ const ChunkingStrategySchema = z.preprocess(parseStringifiedObjectInput, z.union
     }),
   }),
 ]))
+
+const ScheduleTimeSchema = stringifiedObjectInput(z.object({
+  hour: z.number().int().min(0).max(23).describe('UTC hour, from 0 through 23.'),
+  minute: z.number().int().min(0).max(59).describe('UTC minute, from 0 through 59.'),
+}))
 
 export const EmptySchema = z.object({})
 
@@ -115,13 +130,12 @@ export const DeleteModelSchema = z.object({
   modelId: NonEmptyString,
 })
 
-const AgentModelOptionsSchema = z.preprocess(parseStringifiedObjectInput, z.object({
+const AgentModelOptionsSchema = stringifiedObjectInput(z.object({
   temperature: z.number().min(0).max(2).optional().describe('Temperature for model generation (0-2). Omit to use model default.'),
   maxTokens: z.number().int().optional().describe('Max output tokens. Use -1 for unlimited/model default.'),
 })).optional().describe('Model generation options (temperature, maxTokens). These are stored in the agent\'s modelOptions.')
 
-const SelectedFunctionsSchema = z.preprocess(
-  parseStringifiedObjectInput,
+const SelectedFunctionsSchema = stringifiedObjectInput(
   z.record(z.array(z.string()))
 )
 
@@ -175,7 +189,7 @@ export const GeneratePromptSchema = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
   type: z.enum(['agent', 'workflow']).optional(),
-  modelOptions: z.preprocess(parseStringifiedObjectInput, z.object({}).passthrough()).optional(),
+  modelOptions: stringifiedObjectInput(z.object({}).passthrough()).optional(),
 })
 
 export const WorkflowIdSchema = z.object({
@@ -289,7 +303,7 @@ const FactoryWorkflowStepSchema = BaseFactoryStepSchema.extend({
   agentRef: z.never().optional(),
 })
 
-const FactoryStepInputSchema = z.preprocess(parseStringifiedObjectInput, z.discriminatedUnion('kind', [
+const FactoryStepInputSchema = stringifiedObjectInput(z.discriminatedUnion('kind', [
   FactoryAgentStepSchema,
   FactoryWorkflowStepSchema,
 ])).describe(
@@ -361,18 +375,13 @@ export const FactoryRunStepsListSchema = z.object({
   ),
 })
 
-const FactoryScheduleTimeSchema = z.preprocess(parseStringifiedObjectInput, z.object({
-  hour: z.number().int().min(0).max(23).describe('UTC hour, from 0 through 23.'),
-  minute: z.number().int().min(0).max(59).describe('UTC minute, from 0 through 59.'),
-}))
-
 const FactoryScheduleBodySchema = z.object({
   factoryConfigId: NonEmptyString.describe('Factory config id this schedule should execute.'),
   label: z.string().optional().describe('Optional human-readable label for the schedule.'),
   startDate: z.number().optional().describe(
     'Unix epoch milliseconds for when the schedule becomes active. Defaults to Date.now() on the backend.'
   ),
-  timesToRun: z.array(FactoryScheduleTimeSchema).min(1).describe(
+  timesToRun: z.array(ScheduleTimeSchema).min(1).describe(
     'One or more UTC times to run the factory. This is required and uses backend UTC storage format.'
   ),
   repeatInterval: z.enum(['once', 'daily', 'weekly', 'monthly']).optional().describe(
@@ -495,12 +504,7 @@ export const ScheduledRunIdSchema = z.object({
   id: NonEmptyString,
 })
 
-const ScheduledRunTimeSchema = z.preprocess(parseStringifiedObjectInput, z.object({
-  hour: z.number().int().min(0).max(23),
-  minute: z.number().int().min(0).max(59),
-}))
-
-const SlackMetadataSchema = z.preprocess(parseStringifiedObjectInput, z.object({
+const SlackMetadataSchema = stringifiedObjectInput(z.object({
   scheduleId: z.string(),
   slackUserId: z.string(),
   deliveryChannelId: z.string(),
@@ -511,7 +515,7 @@ export const CreateScheduledRunSchema = z.object({
   agentName: NonEmptyString,
   prompt: z.string().min(1),
   startDate: z.number(),
-  timesToRun: z.array(ScheduledRunTimeSchema).min(1),
+  timesToRun: z.array(ScheduleTimeSchema).min(1),
   repeatInterval: z.enum(['daily', 'weekly', 'monthly', 'once']),
   daysOfWeek: z.array(z.number().int().min(0).max(6)).optional(),
   dayOfMonth: z.number().int().min(1).max(31).optional(),

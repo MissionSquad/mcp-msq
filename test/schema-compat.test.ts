@@ -7,6 +7,7 @@ import {
   CreateVectorStoreSchema,
   FactoryScheduleCreateSchema,
   GeneratePromptSchema,
+  UpdateAgentSchema,
 } from '../src/schemas.js'
 
 describe('MCP schema compatibility parsing', () => {
@@ -62,6 +63,34 @@ describe('MCP schema compatibility parsing', () => {
 
     expect(parsed.selectedFunctions).toEqual(selectedFunctions)
     expect(parsed.modelOptions).toEqual(modelOptions)
+  })
+
+  it('accepts omitted agent model options on create and update', () => {
+    const addAgent = AddAgentSchema.parse({
+      name: 'Researcher',
+      description: 'Research agent',
+      systemPrompt: 'Research carefully.',
+      model: 'model-name',
+    })
+    const updateAgent = UpdateAgentSchema.parse({
+      name: 'Researcher',
+      description: 'Updated description',
+    })
+
+    expect(addAgent.modelOptions).toBeUndefined()
+    expect(updateAgent.modelOptions).toBeUndefined()
+  })
+
+  it('reports malformed JSON object strings clearly', () => {
+    const result = ChatCompletionsSchema.safeParse({
+      model: 'agent-name',
+      messages: ['{"role":"user","content":"missing close"'],
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toContain('Invalid JSON object string')
+    }
   })
 
   it('accepts JSON-stringified schedule time and slack metadata objects', () => {
