@@ -102,7 +102,19 @@ If no API key is available, the tool returns a user-facing error.
 
 - `msq_list_agents`
 - `msq_add_agent`
+- `msq_publish_agent`
 - `msq_delete_agent`
+
+`msq_add_agent` automatically ensures the created or overwritten agent is published. Its normal
+creation response includes a `publish` field:
+
+- `success: true`, `alreadyPublished`, and the published-agent record when publishing succeeds
+- `success: false`, `error`, and optional API `status`/`details` when creation succeeded but
+  publishing failed
+
+`msq_publish_agent` accepts `agentId` and `agentName`. It is publish-only and idempotent from the
+MCP caller's perspective: it checks current publish records before invoking the API's toggle
+endpoint, so an already-published agent is not unpublished.
 
 ### Core Utilities
 

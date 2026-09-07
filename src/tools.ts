@@ -36,6 +36,7 @@ import {
   FileContentSchema,
   FileIdSchema,
   GeneratePromptSchema,
+  PublishAgentSchema,
   ScheduledRunIdSchema,
   ScrapeUrlSchema,
   ServerNameSchema,
@@ -160,6 +161,35 @@ const WorkflowRunHydratedRecordSchema = z.object({
 const WorkflowRunHydratedResponseSchema = z.object({
   success: z.boolean(),
   data: WorkflowRunHydratedRecordSchema,
+}).passthrough()
+
+const PublishedAgentSchema = z.object({
+  userId: z.string(),
+  username: z.string(),
+  agentId: z.string(),
+  agentName: z.string(),
+  slug: z.string(),
+  isPublished: z.boolean(),
+  publishedAt: z.number(),
+  updatedAt: z.number(),
+}).passthrough()
+
+const PublishedAgentListResponseSchema = z.object({
+  success: z.literal(true),
+  data: z.array(PublishedAgentSchema),
+}).passthrough()
+
+const PublishAgentResponseSchema = z.object({
+  success: z.literal(true),
+  data: PublishedAgentSchema,
+}).passthrough()
+
+const AddAgentSuccessResponseSchema = z.object({
+  status: z.literal('success'),
+  data: z.object({
+    id: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+  }).passthrough(),
 }).passthrough()
 
 const WorkflowConfigListResponseSchema = z.object({
@@ -402,6 +432,83 @@ type FactoryRunRecord = z.infer<typeof FactoryRunRecordSchema>
 type FactoryStepRunRecord = z.infer<typeof FactoryStepRunRecordSchema>
 type FactoryStepHydratedRecord = z.infer<typeof FactoryStepHydratedRecordSchema>
 type FactoryScheduleRecord = z.infer<typeof FactoryScheduleRecordSchema>
+type PublishAgentInput = z.infer<typeof PublishAgentSchema>
+type PublishedAgent = z.infer<typeof PublishedAgentSchema>
+
+interface EnsureAgentPublishedResult {
+  success: true
+  alreadyPublished: boolean
+  data: PublishedAgent
+}
+
+interface PublishAgentFailure {
+  success: false
+  error: string
+  status?: number
+  details?: unknown
+}
+
+async function ensureAgentPublished(
+  client: MissionSquadClient,
+  input: PublishAgentInput,
+): Promise<EnsureAgentPublishedResult> {
+  const publishedListResponse = PublishedAgentListResponseSchema.parse(
+    await client.requestJson({
+      method: 'GET',
+      path: 'core/agents/published',
+    }),
+  )
+  const existing = publishedListResponse.data.find(
+    (record) => record.agentId === input.agentId && record.isPublished,
+  )
+
+  if (existing) {
+    return {
+      success: true,
+      alreadyPublished: true,
+      data: existing,
+    }
+  }
+
+  const publishResponse = PublishAgentResponseSchema.parse(
+    await client.requestJson({
+      method: 'POST',
+      path: 'core/agents/publish',
+      body: input,
+    }),
+  )
+
+  if (
+    publishResponse.data.agentId !== input.agentId
+    || !publishResponse.data.isPublished
+  ) {
+    throw new Error(`MissionSquad API did not publish agent "${input.agentName}".`)
+  }
+
+  return {
+    success: true,
+    alreadyPublished: false,
+    data: publishResponse.data,
+  }
+}
+
+function toPublishAgentFailure(error: unknown): PublishAgentFailure {
+  const userError = toUserError(error, 'Automatic agent publishing failed')
+
+  if (error instanceof MsqApiError) {
+    return {
+      success: false,
+      error: userError.message,
+      status: error.status,
+      details: error.responseBody,
+    }
+  }
+
+  return {
+    success: false,
+    error: userError.message,
+  }
+}
 
 type WorkflowConfigWriteInput = z.infer<typeof WorkflowCreateSchema>
 
@@ -1423,17 +1530,48 @@ const msqTools = [
   defineTool({
     name: 'msq_add_agent',
     description:
-      'Create or update an agent definition. '
+      'Create or update an agent definition and automatically ensure it is published. '
       + 'Accepts systemPromptId (from msq_generate_prompt) as an alternative to systemPrompt — '
       + 'recommended for complex/long prompts to avoid output truncation. '
       + 'Use the `tools` parameter with function names; the server resolves them to MCP servers.',
     parameters: AddAgentSchema,
-    run: async (client, args) =>
-      client.requestJson({
+    run: async (client, args) => {
+      const response = await client.requestJson({
         method: 'POST',
         path: 'core/add/agent',
         body: args,
-      }),
+      })
+      const parsedResponse = AddAgentSuccessResponseSchema.safeParse(response)
+
+      if (!parsedResponse.success) {
+        return response
+      }
+
+      try {
+        const publish = await ensureAgentPublished(client, {
+          agentId: parsedResponse.data.data.id,
+          agentName: parsedResponse.data.data.name,
+        })
+
+        return {
+          ...parsedResponse.data,
+          publish,
+        }
+      } catch (error) {
+        return {
+          ...parsedResponse.data,
+          publish: toPublishAgentFailure(error),
+        }
+      }
+    },
+  }),
+  defineTool({
+    name: 'msq_publish_agent',
+    description:
+      'Publish an owned MissionSquad agent by ID and name. '
+      + 'This operation is idempotent and will not unpublish an agent that is already published.',
+    parameters: PublishAgentSchema,
+    run: ensureAgentPublished,
   }),
   defineTool({
     name: 'msq_update_agent',

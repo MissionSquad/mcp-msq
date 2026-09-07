@@ -7,6 +7,7 @@ import {
   CreateVectorStoreSchema,
   FactoryScheduleCreateSchema,
   GeneratePromptSchema,
+  PublishAgentSchema,
   UpdateAgentSchema,
 } from '../src/schemas.js'
 
@@ -79,6 +80,16 @@ describe('MCP schema compatibility parsing', () => {
 
     expect(addAgent.modelOptions).toBeUndefined()
     expect(updateAgent.modelOptions).toBeUndefined()
+  })
+
+  it('accepts the verified publish-agent endpoint contract', () => {
+    expect(PublishAgentSchema.parse({
+      agentId: 'agent-1',
+      agentName: 'Researcher',
+    })).toEqual({
+      agentId: 'agent-1',
+      agentName: 'Researcher',
+    })
   })
 
   it('reports malformed JSON object strings clearly', () => {

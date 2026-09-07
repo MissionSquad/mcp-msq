@@ -2,6 +2,10 @@ import { z } from 'zod'
 
 const NonEmptyString = z.string().trim().min(1)
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function parseStringifiedObjectInput(value: unknown, ctx: z.RefinementCtx): unknown {
   if (typeof value !== 'string') {
     return value
@@ -30,6 +34,10 @@ function parseStringifiedObjectInput(value: unknown, ctx: z.RefinementCtx): unkn
 
 function stringifiedObjectInput<T extends z.ZodTypeAny>(schema: T): z.ZodPipeline<z.ZodEffects<z.ZodAny, unknown, unknown>, T> {
   return z.any().transform(parseStringifiedObjectInput).pipe(schema)
+}
+
+function stripRefPrefix(value: string, prefix: string): string {
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value
 }
 
 const MetadataSchema = stringifiedObjectInput(z.record(z.unknown()))
@@ -166,6 +174,11 @@ export const DeleteAgentSchema = z.object({
   name: NonEmptyString,
 })
 
+export const PublishAgentSchema = z.object({
+  agentId: NonEmptyString.describe('ID of the owned agent to publish.'),
+  agentName: NonEmptyString.describe('Name of the owned agent to publish.'),
+})
+
 export const UpdateAgentSchema = z.object({
   name: NonEmptyString.describe('Name of the existing agent to update.'),
   description: z.string().optional().describe('New description.'),
@@ -256,6 +269,16 @@ const FactoryAgentRefSchema = z.object({
   message: 'Either agentRef or agentId must be provided.',
 })
 
+const FactoryAgentRefInputSchema = z.union([
+  FactoryAgentRefSchema,
+  NonEmptyString,
+]).transform((value) => {
+  if (typeof value === 'string') {
+    return { agentRef: value }
+  }
+  return value
+})
+
 const FactoryWorkflowRefSchema = z.object({
   workflowConfigId: NonEmptyString.describe('Workflow config id to invoke for this step.'),
   payloadSchema: MetadataSchema.optional().describe(
@@ -271,6 +294,92 @@ const FactoryWorkflowRefSchema = z.object({
     'Maximum fixer-agent repair attempts. Defaults to 0 unless a fixer agent is configured.'
   ),
 })
+
+const FactoryWorkflowRefInputSchema = z.union([
+  FactoryWorkflowRefSchema,
+  NonEmptyString,
+]).transform((value) => {
+  if (typeof value === 'string') {
+    return { workflowConfigId: stripRefPrefix(value, 'workflow/') }
+  }
+  return {
+    ...value,
+    workflowConfigId: stripRefPrefix(value.workflowConfigId, 'workflow/'),
+  }
+})
+
+function getStringField(value: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    if (typeof value[key] === 'string' && value[key]) {
+      return value[key] as string
+    }
+  }
+  return undefined
+}
+
+function normalizeFactoryWorkflowRefInput(value: Record<string, unknown>): Record<string, unknown> | undefined {
+  const workflowRef = value.workflowRef
+  let normalized: Record<string, unknown> | undefined
+
+  if (typeof workflowRef === 'string') {
+    normalized = { workflowConfigId: workflowRef }
+  } else if (isRecord(workflowRef)) {
+    normalized = { ...workflowRef }
+  } else {
+    const workflowConfigId = getStringField(value, ['workflowConfigId', 'workflowId'])
+    if (workflowConfigId) {
+      normalized = { workflowConfigId }
+    }
+  }
+
+  if (!normalized) {
+    return undefined
+  }
+
+  const workflowConfigId = getStringField(normalized, ['workflowConfigId', 'workflowId', 'workflowRef'])
+  if (workflowConfigId) {
+    normalized.workflowConfigId = workflowConfigId
+  }
+
+  for (const key of ['payloadSchema', 'fixerAgentRef', 'fixerAgentId', 'maxRepairAttempts']) {
+    if (normalized[key] === undefined && value[key] !== undefined) {
+      normalized[key] = value[key]
+    }
+  }
+
+  return normalized
+}
+
+function normalizeFactoryStepInput(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value
+  }
+
+  const normalized: Record<string, unknown> = { ...value }
+  const kind = getStringField(normalized, ['kind', 'type'])
+  if (kind === 'agent' || kind === 'workflow') {
+    normalized.kind = kind
+  }
+
+  if (normalized.kind === 'agent') {
+    if (normalized.agentRef === undefined && typeof normalized.agentId === 'string' && normalized.agentId) {
+      normalized.agentRef = { agentId: normalized.agentId }
+    }
+
+    if (typeof normalized.promptOverride === 'string' && isRecord(normalized.agentRef) && normalized.agentRef.promptOverride === undefined) {
+      normalized.agentRef = { ...normalized.agentRef, promptOverride: normalized.promptOverride }
+    }
+  }
+
+  if (normalized.kind === 'workflow') {
+    const workflowRef = normalizeFactoryWorkflowRefInput(normalized)
+    if (workflowRef) {
+      normalized.workflowRef = workflowRef
+    }
+  }
+
+  return normalized
+}
 
 const BaseFactoryStepSchema = z.object({
   stepId: NonEmptyString.optional().describe(
@@ -288,28 +397,44 @@ const BaseFactoryStepSchema = z.object({
   maxStepInvocations: z.number().int().positive().optional().describe(
     'Per-step invocation cap. Defaults to 1 when uncapped or omitted.'
   ),
-  transition: FactoryTransitionSchema.describe('What the factory should do after this step completes.'),
+  transition: FactoryTransitionSchema.optional().describe(
+    'What the factory should do after this step completes. Defaults to next, except the final step defaults to stop.'
+  ),
 })
 
 const FactoryAgentStepSchema = BaseFactoryStepSchema.extend({
   kind: z.literal('agent').describe('Run a MissionSquad agent for this step.'),
-  agentRef: FactoryAgentRefSchema.describe('Agent execution target for this step.'),
+  agentRef: FactoryAgentRefInputSchema.describe('Agent execution target for this step.'),
   workflowRef: z.never().optional(),
 })
 
 const FactoryWorkflowStepSchema = BaseFactoryStepSchema.extend({
   kind: z.literal('workflow').describe('Run a MissionSquad workflow for this step.'),
-  workflowRef: FactoryWorkflowRefSchema.describe('Workflow execution target for this step.'),
+  workflowRef: FactoryWorkflowRefInputSchema.describe('Workflow execution target for this step.'),
   agentRef: z.never().optional(),
 })
 
-const FactoryStepInputSchema = stringifiedObjectInput(z.discriminatedUnion('kind', [
-  FactoryAgentStepSchema,
-  FactoryWorkflowStepSchema,
-])).describe(
+const FactoryStepInputSchema = z
+  .any()
+  .transform(parseStringifiedObjectInput)
+  .transform(normalizeFactoryStepInput)
+  .pipe(z.discriminatedUnion('kind', [
+    FactoryAgentStepSchema,
+    FactoryWorkflowStepSchema,
+  ])).describe(
   'Factory step definition. Agent steps require agentRef only. Workflow steps require workflowRef only. '
-  + 'Prefer JSON objects; JSON-stringified step objects are accepted for compatibility.'
+  + 'Prefer canonical objects with kind, nested refs, and transitions. JSON-stringified step objects and simplified type/ref aliases are accepted for compatibility.'
 )
+
+type FactoryStepInput = z.infer<typeof FactoryStepInputSchema>
+type FactoryTransitionInput = z.infer<typeof FactoryTransitionSchema>
+
+function withDefaultFactoryStepTransitions(steps: FactoryStepInput[]): Array<FactoryStepInput & { transition: FactoryTransitionInput }> {
+  return steps.map((step, index) => ({
+    ...step,
+    transition: step.transition ?? { kind: index === steps.length - 1 ? 'stop' : 'next' },
+  }))
+}
 
 export const FactoryIdSchema = z.object({
   id: NonEmptyString.describe('Factory config id.'),
@@ -321,7 +446,7 @@ export const FactoryCreateSchema = z.object({
   ),
   name: NonEmptyString.describe('Factory name.'),
   description: z.string().optional().describe('Optional human-readable description of the factory.'),
-  steps: z.array(FactoryStepInputSchema).min(1).max(50).describe(
+  steps: z.array(FactoryStepInputSchema).min(1).max(50).transform(withDefaultFactoryStepTransitions).describe(
     'Full ordered step list for the factory. Send the complete desired step array.'
   ),
   continuous: z.boolean().optional().describe(
