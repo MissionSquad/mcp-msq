@@ -12,6 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # npm Trusted Publishing: the job proves its identity to the registry with
+      # a GitHub OIDC token instead of a stored npm token. The package's npm
+      # settings must list this repo + workflow file as a trusted publisher.
+      id-token: write
 
     steps:
       - name: Checkout Repository
@@ -22,10 +26,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org/'
-          scope: '@missionsquad'
+          node-version: '22'
           cache: 'yarn'
+
+      # Trusted publishing needs npm >= 11.5.1; Node's bundled npm may be older.
+      # No registry-url / NODE_AUTH_TOKEN on purpose: a configured token would
+      # take precedence over the OIDC exchange.
+      - name: Update npm
+        run: npm install -g npm@latest && npm --version
 
       - name: Install Dependencies
         run: yarn install --frozen-lockfile
@@ -38,5 +46,3 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
