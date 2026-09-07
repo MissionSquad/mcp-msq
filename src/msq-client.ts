@@ -5,12 +5,25 @@ import { MsqApiError, MsqTransportError } from './errors.js'
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
 
+/**
+ * Which URL root a request path is resolved against.
+ *
+ * - `v1` (default): the configured API base URL (`https://<api-host>/v1`),
+ *   for every authenticated MissionSquad endpoint.
+ * - `origin`: the scheme+host of the configured base URL with the `/v1`
+ *   segment dropped. The anonymous Agent Pages read/run surface is mounted
+ *   at `/api/public/pages/...` on the same API host, outside the `/v1`
+ *   prefix, so it needs origin-relative resolution.
+ */
+export type RequestRoot = 'v1' | 'origin'
+
 interface JsonRequestOptions {
   method: HttpMethod
   path: string
   query?: Record<string, string | number | boolean | undefined>
   body?: unknown
   headers?: Record<string, string | undefined>
+  root?: RequestRoot
 }
 
 interface EventStreamRequestOptions {
@@ -19,6 +32,7 @@ interface EventStreamRequestOptions {
   headers?: Record<string, string | undefined>
   method?: HttpMethod
   body?: unknown
+  root?: RequestRoot
 }
 
 interface FileUploadOptions {
@@ -164,7 +178,7 @@ export class MissionSquadClient {
   constructor(private readonly requestConfig: ResolvedRequestConfig) {}
 
   public async requestJson(options: JsonRequestOptions): Promise<unknown> {
-    const url = this.buildUrl(options.path, options.query)
+    const url = this.buildUrl(options.path, options.query, options.root)
 
     const headers: Record<string, string> = {
       'x-api-key': this.requestConfig.apiKey,
@@ -190,7 +204,7 @@ export class MissionSquadClient {
     options: EventStreamRequestOptions,
     onEvent: (event: ServerSentEvent) => Promise<void> | void,
   ): Promise<void> {
-    const url = this.buildUrl(options.path, options.query)
+    const url = this.buildUrl(options.path, options.query, options.root)
 
     const headers: Record<string, string> = {
       Accept: 'text/event-stream',
@@ -329,14 +343,22 @@ export class MissionSquadClient {
     }
   }
 
+  /**
+   * Origin (scheme + host) of the configured base URL, used for endpoints
+   * mounted outside the `/v1` prefix (see {@link RequestRoot}).
+   */
+  public get origin(): string {
+    return new URL(this.requestConfig.baseUrl).origin
+  }
+
   private buildUrl(
     path: string,
     query?: Record<string, string | number | boolean | undefined>,
+    root: RequestRoot = 'v1',
   ): string {
     const normalizedPath = path.startsWith('/') ? path.slice(1) : path
-    const baseUrlWithSlash = this.requestConfig.baseUrl.endsWith('/')
-      ? this.requestConfig.baseUrl
-      : `${this.requestConfig.baseUrl}/`
+    const base = root === 'origin' ? this.origin : this.requestConfig.baseUrl
+    const baseUrlWithSlash = base.endsWith('/') ? base : `${base}/`
 
     const url = new URL(normalizedPath, baseUrlWithSlash)
 

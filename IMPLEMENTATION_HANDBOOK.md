@@ -178,6 +178,47 @@ Validation rules:
 - `msq_list_server_tools` → `GET /v1/mcp/servers/:name/tools`
   - MCP output contract preserves the raw per-server tool list for detailed inspection
 
+### Agent Pages (owner builder API — `combinedMiddleware`, API key accepted)
+
+Verified against `missionsquad-api/src/controllers/pages.ts`, `services/page.ts`,
+`utils/pageLayout.ts`, `types/pages.ts` and a live capture on 2026-09-06.
+
+- `msq_list_pages` → `GET /v1/core/pages` → `{ pages: PageSummary[], publicOrigin }` (+ derived `publicUrl`)
+- `msq_get_page` → `GET /v1/core/pages/:id` → `{ page: PageRecord, publicOrigin }` (+ derived `publicUrl`)
+- `msq_create_page` → `POST /v1/core/pages` (body `PageDraftInput`; `onDemand` defaulted for on-demand pages)
+- `msq_update_page` → `GET /v1/core/pages/:id` then `PUT /v1/core/pages/:id` with the merged full
+  `PageDraftInput` (the API replaces every user-editable field; `null` removes optional blocks; runMode /
+  pageType switches drop the blocks the §6 combination rules forbid unless supplied)
+- `msq_delete_page` → `DELETE /v1/core/pages/:id` → `{ ok: true }` (409 while live)
+- `msq_publish_page` → `POST /v1/core/pages/:id/publish` → `{ page, publicOrigin }`
+- `msq_unpublish_page` → `POST /v1/core/pages/:id/unpublish` → `{ page, publicOrigin }`
+- `msq_compile_page_layout_schema` → `POST /v1/core/pages/layout-schema` → `{ schema }`
+- `msq_list_page_categories` → `GET /v1/core/pages/categories` → `{ categories }`
+- `msq_run_page_preview` → `POST /v1/core/pages/:id/preview-run` (body `{ input? }`) → 202 `{ runId }`
+- `msq_list_page_runs` → `GET /v1/core/pages/:id/runs?limit&offset` → `{ runs, total }`
+  - MCP output omits each run's `content` document and adds `hasContent`
+- `msq_get_page_run_status` → polls `GET /v1/core/pages/:id/runs` (newest first, scanned by run id) until
+  `completed` | `error` or `timeoutSeconds`
+- `msq_get_page_run_result` → same lookup; returns `content` + `usage` only for `completed` runs
+- `msq_delete_page_run` → `DELETE /v1/core/pages/:id/runs/:runId` → `{ ok: true }` (409 while active)
+- `msq_get_page_preview_token` → `GET /v1/core/pages/:id/preview-token` → `{ token, path }` (+ derived `url`)
+- `msq_get_page_email_preview` → `GET /v1/core/pages/:id/email-preview` → `{ html }`
+- `msq_list_x402_networks` → `GET /v1/core/x402/networks` → `{ networks }`
+
+### Agent Pages (anonymous public API — origin-rooted, outside `/v1`)
+
+The public surface is mounted at `/api/public/pages/...` on the API host. The client resolves these
+paths against the ORIGIN of the configured base URL (`root: 'origin'`), so
+`MSQ_BASE_URL=https://agents.missionsquad.ai/v1` yields `https://agents.missionsquad.ai/api/public/...`.
+
+- `msq_get_public_page` → `GET /api/public/pages/:slug` → `{ descriptor }` | `{ redirect: { slug } }`
+- `msq_get_public_page_content` → `GET /api/public/pages/:slug/content?view&period`
+- `msq_list_public_page_runs` → `GET /api/public/pages/:slug/runs?q&limit&offset`
+- `msq_run_public_page` → `POST /api/public/pages/:slug/runs` (body `{ input }`) → 202 `{ runId }`
+- `msq_get_public_page_run` → `GET /api/public/pages/:slug/runs/:runId`, waiting on
+  `GET /api/public/pages/:slug/runs/:runId/stream` (SSE `{ type: 'run', status, ... }` frames, `[DONE]`)
+  while the run is queued/running
+
 ### Core Collections
 
 - `msq_list_core_collections` → `GET /v1/core/collections`

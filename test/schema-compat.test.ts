@@ -7,6 +7,8 @@ import {
   CreateVectorStoreSchema,
   FactoryScheduleCreateSchema,
   GeneratePromptSchema,
+  PageCreateSchema,
+  PageUpdateSchema,
   PublishAgentSchema,
   UpdateAgentSchema,
 } from '../src/schemas.js'
@@ -132,6 +134,49 @@ describe('MCP schema compatibility parsing', () => {
     expect(factorySchedule.timesToRun).toEqual([time])
     expect(scheduledRun.timesToRun).toEqual([time])
     expect(scheduledRun.slackMetadata).toEqual(slackMetadata)
+  })
+
+  it('accepts JSON-stringified agent-page header, source, layout and config objects', () => {
+    const header = { title: 'Topic Explainer', description: 'Desc', ownerDisplay: 'demo' }
+    const source = { type: 'agent', id: 'agent-1' }
+    const layout = {
+      title: 'Topic Explainer',
+      layout: 'report',
+      fields: [
+        { name: 'synopsis', type: 'richtext', display: 'synopsis' },
+        { name: 'verdict', type: 'enum', options: ['buy', 'hold', 'sell'] },
+      ],
+    }
+    const onDemand = { storeHistory: true, inputForm: [{ name: 'topic', label: 'Topic', type: 'text', required: true }] }
+
+    const created = PageCreateSchema.parse({
+      header: JSON.stringify(header),
+      source: JSON.stringify(source),
+      layout: JSON.stringify(layout),
+      runMode: 'on-demand',
+      onDemand: JSON.stringify(onDemand),
+    })
+
+    expect(created.pageType).toBe('user')
+    expect(created.header).toEqual(header)
+    expect(created.source).toEqual(source)
+    expect(created.layout).toEqual(layout)
+    expect(created.onDemand).toEqual(onDemand)
+
+    const updated = PageUpdateSchema.parse({
+      id: 'page-1',
+      schedule: JSON.stringify({ cadence: 'daily', hour: 7, minute: 0, timezone: 'UTC' }),
+      payment: null,
+    })
+
+    expect(updated.schedule).toEqual({
+      cadence: 'daily',
+      hour: 7,
+      minute: 0,
+      timezone: 'UTC',
+      aggregation: { enabled: false, views: ['daily'] },
+    })
+    expect(updated.payment).toBeNull()
   })
 
   it('accepts JSON-stringified vector-store object options', () => {

@@ -36,6 +36,19 @@ import {
   FileContentSchema,
   FileIdSchema,
   GeneratePromptSchema,
+  PageCreateSchema,
+  PageIdSchema,
+  PageLayoutCompileSchema,
+  PagePreviewRunSchema,
+  PageRunIdsSchema,
+  PageRunsListSchema,
+  PageRunStatusSchema,
+  PageUpdateSchema,
+  PublicPageContentSchema,
+  PublicPageRunCreateSchema,
+  PublicPageRunSchema,
+  PublicPageRunsListSchema,
+  PublicPageSlugSchema,
   PublishAgentSchema,
   ScheduledRunIdSchema,
   ScrapeUrlSchema,
@@ -1403,6 +1416,479 @@ export function summarizeServerInventories(payload: unknown): unknown {
   return { servers }
 }
 
+/* ======================
+   Agent Pages — response contracts + helpers
+   Shapes verified live against missionsquad-api (controllers/pages.ts,
+   controllers/publicPages.ts, types/pages.ts) on 2026-09-06.
+   ====================== */
+
+const PageStatusSchema = z.enum(['draft', 'live', 'unpublished'])
+const PageRunStatusValueSchema = z.enum(['queued', 'running', 'completed', 'error'])
+
+const PageSummaryRecordSchema = z.object({
+  id: z.string(),
+  slug: z.string().optional(),
+  title: z.string(),
+  status: PageStatusSchema,
+  pageType: z.enum(['user', 'platform']),
+  runMode: z.enum(['scheduled', 'on-demand']),
+  updatedAt: z.number(),
+  publishedAt: z.number().optional(),
+  lastRunAt: z.number().optional(),
+  lastRunStatus: PageRunStatusValueSchema.optional(),
+  schedulePaused: z.boolean().optional(),
+  visibility: z.literal('private').optional(),
+}).passthrough()
+
+const PageRecordSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  slug: z.string().optional(),
+  previousSlugs: z.array(z.string()).optional(),
+  pageType: z.enum(['user', 'platform']),
+  status: PageStatusSchema,
+  publicListed: z.boolean().optional(),
+  visibility: z.enum(['public', 'private']).optional(),
+  categories: z.array(z.string()).optional(),
+  header: z.object({
+    title: z.string(),
+    description: z.string(),
+    ownerDisplay: z.string(),
+    sourceDisplay: z.string().optional(),
+  }).passthrough(),
+  source: z.object({
+    type: z.enum(['agent', 'workflow', 'factory']),
+    id: z.string(),
+  }).passthrough(),
+  layout: z.object({
+    title: z.string(),
+    layout: z.string(),
+    fields: z.array(z.record(z.unknown())),
+  }).passthrough(),
+  runMode: z.enum(['scheduled', 'on-demand']),
+  schedule: z.record(z.unknown()).optional(),
+  scheduleState: z.object({
+    nextRunAt: z.number().optional(),
+    consecutiveFailures: z.number(),
+    pausedAt: z.number().optional(),
+  }).passthrough().optional(),
+  onDemand: z.record(z.unknown()).optional(),
+  payment: z.record(z.unknown()).optional(),
+  platformOptions: z.record(z.unknown()).optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  publishedAt: z.number().optional(),
+}).passthrough()
+
+const PageRunRecordSchema = z.object({
+  runId: z.string(),
+  pageId: z.string(),
+  userId: z.string(),
+  view: z.enum(['daily', 'weekly', 'monthly', 'ondemand']),
+  periodKey: z.string().optional(),
+  input: z.record(z.string()).optional(),
+  inputSummary: z.string().optional(),
+  content: z.unknown().optional(),
+  status: PageRunStatusValueSchema,
+  error: z.string().optional(),
+  usage: z.record(z.unknown()).nullish(),
+  paymentId: z.string().optional(),
+  priceUsd: z.string().optional(),
+  source: z.enum(['x402-paid', 'owner', 'free']).optional(),
+  isAggregate: z.boolean().optional(),
+  startedAt: z.number(),
+  completedAt: z.number().optional(),
+}).passthrough()
+
+const PageListResponseSchema = z.object({
+  pages: z.array(PageSummaryRecordSchema),
+  publicOrigin: z.string().optional(),
+}).passthrough()
+
+const PageResponseSchema = z.object({
+  page: PageRecordSchema,
+  publicOrigin: z.string().optional(),
+}).passthrough()
+
+const PageRunListResponseSchema = z.object({
+  runs: z.array(PageRunRecordSchema),
+  total: z.number(),
+}).passthrough()
+
+const PageRunStartedResponseSchema = z.object({
+  runId: z.string(),
+}).passthrough()
+
+const PageLayoutSchemaResponseSchema = z.object({
+  schema: z.record(z.unknown()),
+}).passthrough()
+
+const PageCategoriesResponseSchema = z.object({
+  categories: z.array(z.string()),
+}).passthrough()
+
+const PagePreviewTokenResponseSchema = z.object({
+  token: z.string(),
+  path: z.string(),
+}).passthrough()
+
+const PageEmailPreviewResponseSchema = z.object({
+  html: z.string(),
+}).passthrough()
+
+const X402NetworksResponseSchema = z.object({
+  networks: z.array(z.object({
+    network: z.string(),
+    displayName: z.string(),
+    available: z.boolean(),
+    testnet: z.boolean(),
+  }).passthrough()),
+}).passthrough()
+
+const PublicPageRunStatusSchema = z.enum(['queued', 'running', 'completed', 'error'])
+
+const PublicPageRunDetailSchema = z.object({
+  runId: z.string(),
+  status: PublicPageRunStatusSchema,
+  content: z.unknown().optional(),
+  producedAt: z.number().optional(),
+  inputSummary: z.string().optional(),
+  error: z.string().optional(),
+}).passthrough()
+
+type PageRecord = z.infer<typeof PageRecordSchema>
+type PageRunRecord = z.infer<typeof PageRunRecordSchema>
+type PublicPageRunDetail = z.infer<typeof PublicPageRunDetailSchema>
+type PageUpdateInput = z.infer<typeof PageUpdateSchema>
+type PageCreateInput = z.infer<typeof PageCreateSchema>
+
+const PAGE_RUN_POLL_INTERVAL_MS = 2_500
+const PAGE_RUN_SCAN_PAGE_SIZE = 100
+const PAGE_RUN_SCAN_MAX_PAGES = 10
+
+/** Every field the owner may set through POST/PUT /v1/core/pages (types/pages.ts PageDraftInput). */
+const PAGE_DRAFT_FIELDS = [
+  'pageType',
+  'header',
+  'source',
+  'layout',
+  'runMode',
+  'schedule',
+  'onDemand',
+  'payment',
+  'platformOptions',
+  'publicListed',
+  'visibility',
+  'categories',
+] as const
+
+type PageDraftField = (typeof PAGE_DRAFT_FIELDS)[number]
+
+function publicPageUrl(publicOrigin: string | undefined, slug: string | undefined): string | undefined {
+  if (!publicOrigin || !slug) {
+    return undefined
+  }
+  return `${publicOrigin.replace(/\/+$/, '')}/p/${slug}`
+}
+
+function mapPageSummaryList(payload: z.infer<typeof PageListResponseSchema>) {
+  const publicOrigin = payload.publicOrigin
+  return {
+    pages: payload.pages.map((page) => ({
+      ...page,
+      ...(publicPageUrl(publicOrigin, page.slug) !== undefined
+        ? { publicUrl: publicPageUrl(publicOrigin, page.slug) }
+        : {}),
+    })),
+    publicOrigin,
+  }
+}
+
+function mapPage(payload: z.infer<typeof PageResponseSchema>) {
+  const publicUrl = publicPageUrl(payload.publicOrigin, payload.page.slug)
+  return {
+    page: payload.page,
+    publicOrigin: payload.publicOrigin,
+    ...(publicUrl !== undefined ? { publicUrl } : {}),
+  }
+}
+
+function isPageRunTerminal(status: PageRunRecord['status'] | PublicPageRunDetail['status']): boolean {
+  return status === 'completed' || status === 'error'
+}
+
+/** Owner-visible run summary: everything except the (potentially large) content document. */
+function mapPageRunSummary(run: PageRunRecord) {
+  const { content, ...rest } = run
+  return {
+    ...rest,
+    hasContent: content !== undefined,
+  }
+}
+
+function mapPageRunList(payload: z.infer<typeof PageRunListResponseSchema>) {
+  return {
+    runs: payload.runs.map(mapPageRunSummary),
+    total: payload.total,
+  }
+}
+
+function mapPageRunResult(run: PageRunRecord) {
+  if (run.status === 'queued' || run.status === 'running') {
+    throw new Error('Page run result not ready. Use msq_get_page_run_status.')
+  }
+  if (run.status === 'error') {
+    const suffix = run.error ? ` ${run.error}` : ''
+    throw new Error(`Page run did not complete successfully.${suffix}`)
+  }
+  return {
+    runId: run.runId,
+    pageId: run.pageId,
+    view: run.view,
+    periodKey: run.periodKey,
+    input: run.input,
+    inputSummary: run.inputSummary,
+    source: run.source,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    usage: run.usage ?? null,
+    content: run.content ?? null,
+  }
+}
+
+async function fetchPageRecord(client: MissionSquadClient, id: string): Promise<z.infer<typeof PageResponseSchema>> {
+  const response = await client.requestJson({
+    method: 'GET',
+    path: `core/pages/${encodePathSegment(id)}`,
+  })
+  return PageResponseSchema.parse(response)
+}
+
+async function fetchPageRunPage(
+  client: MissionSquadClient,
+  pageId: string,
+  limit: number,
+  offset: number,
+): Promise<z.infer<typeof PageRunListResponseSchema>> {
+  const response = await client.requestJson({
+    method: 'GET',
+    path: `core/pages/${encodePathSegment(pageId)}/runs`,
+    query: { limit, offset },
+  })
+  return PageRunListResponseSchema.parse(response)
+}
+
+/**
+ * The owner surface exposes runs only as a newest-first list, so a single run
+ * is located by scanning that list. Bounded to PAGE_RUN_SCAN_MAX_PAGES pages
+ * (1 000 runs) — a run older than that is reported as not found.
+ */
+async function findPageRun(
+  client: MissionSquadClient,
+  pageId: string,
+  runId: string,
+): Promise<PageRunRecord | null> {
+  for (let pageIndex = 0; pageIndex < PAGE_RUN_SCAN_MAX_PAGES; pageIndex += 1) {
+    const offset = pageIndex * PAGE_RUN_SCAN_PAGE_SIZE
+    const { runs, total } = await fetchPageRunPage(client, pageId, PAGE_RUN_SCAN_PAGE_SIZE, offset)
+    const match = runs.find((run) => run.runId === runId)
+    if (match) {
+      return match
+    }
+    if (runs.length === 0 || offset + runs.length >= total) {
+      return null
+    }
+  }
+  return null
+}
+
+async function requirePageRun(
+  client: MissionSquadClient,
+  pageId: string,
+  runId: string,
+): Promise<PageRunRecord> {
+  const run = await findPageRun(client, pageId, runId)
+  if (!run) {
+    throw new Error(`Page run '${runId}' was not found on page '${pageId}'.`)
+  }
+  return run
+}
+
+/**
+ * Owner-side runs have no event stream (the builder polls the run list), so
+ * waiting means polling GET /v1/core/pages/:id/runs until the run is terminal
+ * or the caller's timeout elapses. The run keeps executing server-side either
+ * way (PAGES_RUN_TIMEOUT_MS bounds it there).
+ */
+async function waitForPageRun(
+  client: MissionSquadClient,
+  pageId: string,
+  runId: string,
+  timeoutMs: number,
+): Promise<PageRunRecord> {
+  const deadline = Date.now() + timeoutMs
+  let latest = await requirePageRun(client, pageId, runId)
+
+  while (!isPageRunTerminal(latest.status)) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Page run '${runId}' is still ${latest.status} after ${Math.round(timeoutMs / 1000)}s. `
+        + 'Call msq_get_page_run_status again to keep waiting.',
+      )
+    }
+    await sleep(Math.min(PAGE_RUN_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)))
+    latest = await requirePageRun(client, pageId, runId)
+  }
+
+  return latest
+}
+
+async function fetchPublicPageRun(
+  client: MissionSquadClient,
+  slug: string,
+  runId: string,
+): Promise<PublicPageRunDetail> {
+  const response = await client.requestJson({
+    method: 'GET',
+    root: 'origin',
+    path: `api/public/pages/${encodePathSegment(slug)}/runs/${encodePathSegment(runId)}`,
+  })
+  return PublicPageRunDetailSchema.parse(response)
+}
+
+/**
+ * Public runs DO have a server-sent event stream (contracts §22/§24): one
+ * `{ type: 'run', runId, status, ... }` frame per status change (re-emitted
+ * every ~15s as a liveness signal) and `[DONE]` when the run is terminal or
+ * the connection cap is reached. Mirrors waitForWorkflowRunRecord: consume the
+ * stream, then re-read the run detail as the source of truth.
+ */
+async function waitForPublicPageRun(
+  client: MissionSquadClient,
+  slug: string,
+  runId: string,
+  timeoutMs: number,
+): Promise<PublicPageRunDetail> {
+  const deadline = Date.now() + timeoutMs
+  let latest = await fetchPublicPageRun(client, slug, runId)
+
+  while (!isPageRunTerminal(latest.status)) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Public page run '${runId}' is still ${latest.status} after ${Math.round(timeoutMs / 1000)}s. `
+        + 'Call msq_get_public_page_run again to keep waiting.',
+      )
+    }
+
+    let sawTerminalFrame = false
+    await client.consumeServerSentEvents(
+      {
+        root: 'origin',
+        path: `api/public/pages/${encodePathSegment(slug)}/runs/${encodePathSegment(runId)}/stream`,
+      },
+      (event) => {
+        const parsed = parseSseJsonData(event.data)
+        if (!parsed) {
+          return
+        }
+        if (parsed.type === 'run' && (parsed.status === 'completed' || parsed.status === 'error')) {
+          sawTerminalFrame = true
+        }
+      },
+    )
+
+    latest = await fetchPublicPageRun(client, slug, runId)
+    if (isPageRunTerminal(latest.status)) {
+      return latest
+    }
+    if (!sawTerminalFrame) {
+      // The stream ended without a terminal frame (server connection cap) —
+      // fall back to a short poll delay before reconnecting.
+      await sleep(Math.min(PAGE_RUN_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)))
+    }
+  }
+
+  return latest
+}
+
+/** Publish requires an onDemand block on on-demand pages; default it so a bare create can publish. */
+function withDefaultOnDemand(draft: Record<string, unknown>): Record<string, unknown> {
+  if (draft.runMode === 'on-demand' && draft.onDemand === undefined) {
+    return { ...draft, onDemand: { storeHistory: false, inputForm: [] } }
+  }
+  return draft
+}
+
+function toPageCreateBody(args: PageCreateInput): Record<string, unknown> {
+  const body: Record<string, unknown> = {}
+  for (const field of PAGE_DRAFT_FIELDS) {
+    const value = args[field]
+    if (value !== undefined) {
+      body[field] = value
+    }
+  }
+  return withDefaultOnDemand(body)
+}
+
+/** Extracts the user-editable draft from a stored page record (types/pages.ts PageDraftInput). */
+function toPageDraftFromRecord(page: PageRecord): Record<string, unknown> {
+  const draft: Record<string, unknown> = {}
+  for (const field of PAGE_DRAFT_FIELDS) {
+    const value = page[field]
+    if (value !== undefined) {
+      draft[field] = value
+    }
+  }
+  return draft
+}
+
+/**
+ * PUT /v1/core/pages/:id is a FULL replace of every user-editable field, so a
+ * partial update is applied as read-modify-write: start from the stored
+ * record, overlay the provided fields (null removes an optional block), then
+ * drop blocks the API forbids for the resulting runMode / pageType unless the
+ * caller supplied them in the same call (contracts §6 combination rules).
+ */
+function mergePageUpdate(current: PageRecord, args: PageUpdateInput): Record<string, unknown> {
+  const merged = toPageDraftFromRecord(current)
+  const provided = new Set<PageDraftField>()
+
+  for (const field of PAGE_DRAFT_FIELDS) {
+    const value = args[field]
+    if (value === undefined) {
+      continue
+    }
+    provided.add(field)
+    if (value === null || (field === 'categories' && Array.isArray(value) && value.length === 0)) {
+      delete merged[field]
+    } else {
+      merged[field] = value
+    }
+  }
+
+  const runMode = merged.runMode
+  if (runMode === 'on-demand') {
+    if (!provided.has('schedule')) delete merged.schedule
+  } else if (runMode === 'scheduled') {
+    if (!provided.has('onDemand')) delete merged.onDemand
+    if (!provided.has('payment')) delete merged.payment
+  }
+
+  const pageType = merged.pageType
+  if (pageType === 'platform') {
+    if (!provided.has('publicListed')) delete merged.publicListed
+    if (!provided.has('visibility')) delete merged.visibility
+  } else if (pageType === 'user') {
+    if (!provided.has('platformOptions')) delete merged.platformOptions
+  }
+
+  if (args.slug !== undefined) {
+    merged.slug = args.slug
+  }
+
+  return withDefaultOnDemand(merged)
+}
+
 const msqTools = [
   defineTool({
     name: 'msq_list_models',
@@ -2368,6 +2854,321 @@ const msqTools = [
         method: 'GET',
         path: 'core/user/settings',
       }),
+  }),
+  defineTool({
+    name: 'msq_list_pages',
+    description:
+      'List your Agent Pages as compact summaries (id, slug, title, status, pageType, runMode, last run) '
+      + 'plus the public origin. Each published page also gets a `publicUrl` (<publicOrigin>/p/<slug>).',
+    parameters: EmptySchema,
+    run: async (client) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: 'core/pages',
+      })
+      return mapPageSummaryList(PageListResponseSchema.parse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_get_page',
+    description:
+      'Get the full owner record of one Agent Page by id: header, source, layout, run mode, schedule/on-demand/'
+      + 'payment/platform config, visibility, categories, slug and schedule state. Includes `publicUrl` when published.',
+    parameters: PageIdSchema,
+    run: async (client, args) => mapPage(await fetchPageRecord(client, args.id)),
+  }),
+  defineTool({
+    name: 'msq_create_page',
+    description:
+      'Create an Agent Page draft. A page = header + source (agent | workflow | factory) + layout (block DSL '
+      + 'compiled to the JSON Schema every run must satisfy) + run mode (on-demand | scheduled). Drafts are not '
+      + 'public until msq_publish_page. Source must exist in your account. For on-demand pages the input-form '
+      + 'field names must match how the source reads input (see PageInputField.name). Layouts with url/image '
+      + 'fields need a Gemini model on agent-source pages (OpenAI rejects format "uri").',
+    parameters: PageCreateSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: 'core/pages',
+        body: toPageCreateBody(args),
+      })
+      return mapPage(PageResponseSchema.parse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_update_page',
+    description:
+      'Update an Agent Page. Only provide the fields you want to change; every other field is preserved '
+      + '(the API replaces the whole record, so this tool reads the current page and merges first). Pass null '
+      + 'to remove an optional block (schedule, onDemand, payment, platformOptions, publicListed, visibility, '
+      + 'categories). Switching runMode drops the other mode\'s blocks automatically. Live pages are validated at '
+      + 'publish grade, and edits take effect on the next run without republishing.',
+    parameters: PageUpdateSchema,
+    run: async (client, args) => {
+      const current = await fetchPageRecord(client, args.id)
+      const response = await client.requestJson({
+        method: 'PUT',
+        path: `core/pages/${encodePathSegment(args.id)}`,
+        body: mergePageUpdate(current.page, args),
+      })
+      return mapPage(PageResponseSchema.parse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_delete_page',
+    description:
+      'Delete a draft or unpublished Agent Page by id (hard delete; run history goes with it). '
+      + 'Live pages return 409 — call msq_unpublish_page first.',
+    parameters: PageIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'DELETE',
+        path: `core/pages/${encodePathSegment(args.id)}`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_publish_page',
+    description:
+      'Publish an Agent Page: publish-grade validation (non-empty header, valid layout with >= 1 field, existing '
+      + 'source, the run mode\'s config block present), slug allocation from the title at first publish (stable '
+      + 'afterwards), status -> live, and nextRunAt for scheduled pages. Returns the page and its `publicUrl`.',
+    parameters: PageIdSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: `core/pages/${encodePathSegment(args.id)}/publish`,
+      })
+      return mapPage(PageResponseSchema.parse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_unpublish_page',
+    description:
+      'Unpublish a live Agent Page: the public URL starts returning 404, the slug stays reserved for the page, '
+      + 'scheduled runs stop, and run history is kept. Re-publish restores the same slug.',
+    parameters: PageIdSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: `core/pages/${encodePathSegment(args.id)}/unpublish`,
+      })
+      return mapPage(PageResponseSchema.parse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_compile_page_layout_schema',
+    description:
+      'Compile a page layout (saved or not) to the draft-2020-12 JSON Schema its runs must satisfy. Paste this '
+      + 'schema into the final agent\'s prompt of a workflow- or factory-source page so its raw output validates '
+      + 'directly (the fast path that skips the formatter call). Publish-grade layout validation applies.',
+    parameters: PageLayoutCompileSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: 'core/pages/layout-schema',
+        body: { layout: args.layout },
+      })
+      return PageLayoutSchemaResponseSchema.parse(response)
+    },
+  }),
+  defineTool({
+    name: 'msq_list_page_categories',
+    description:
+      'List suggested page categories: the platform seeds (ai, crypto, finance, markets, news, research, utility, '
+      + 'weather) plus every category already in use across pages. Use these values in `categories`.',
+    parameters: EmptySchema,
+    run: async (client) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: 'core/pages/categories',
+      })
+      return PageCategoriesResponseSchema.parse(response)
+    },
+  }),
+  defineTool({
+    name: 'msq_run_page_preview',
+    description:
+      'Start an owner-context run of an Agent Page (works for drafts and live pages; does not consume the free-run '
+      + 'cap). On-demand pages validate `input` against the input form; scheduled pages produce the current '
+      + 'period\'s base edition. Returns { runId } immediately (202) — then use msq_get_page_run_status.',
+    parameters: PagePreviewRunSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        path: `core/pages/${encodePathSegment(args.id)}/preview-run`,
+        body: args.input !== undefined ? { input: args.input } : {},
+      })
+      return {
+        pageId: args.id,
+        ...PageRunStartedResponseSchema.parse(response),
+      }
+    },
+  }),
+  defineTool({
+    name: 'msq_list_page_runs',
+    description:
+      'List an Agent Page\'s runs (owner surface, newest first, every status). Rows carry status, view, input, '
+      + 'source (owner | free | x402-paid), usage, timestamps and the RAW error text for failed runs; the content '
+      + 'document is omitted (`hasContent` flags it) — use msq_get_page_run_result for it.',
+    parameters: PageRunsListSchema,
+    run: async (client, args) =>
+      mapPageRunList(await fetchPageRunPage(client, args.id, args.limit, args.offset)),
+  }),
+  defineTool({
+    name: 'msq_get_page_run_status',
+    description:
+      'Wait for an Agent Page run to reach a terminal status (completed | error) and return its owner-visible '
+      + 'record without the content document. Polls the run list until terminal or `timeoutSeconds` elapses. '
+      + 'Use after msq_run_page_preview; then msq_get_page_run_result for the content.',
+    parameters: PageRunStatusSchema,
+    run: async (client, args) =>
+      mapPageRunSummary(await waitForPageRun(client, args.id, args.runId, args.timeoutSeconds * 1000)),
+  }),
+  defineTool({
+    name: 'msq_get_page_run_result',
+    description:
+      'Get the validated content document (the JSON matching the layout schema) plus usage for a COMPLETED '
+      + 'Agent Page run. Fails while the run is still queued/running or if it ended in error.',
+    parameters: PageRunIdsSchema,
+    run: async (client, args) => mapPageRunResult(await requirePageRun(client, args.id, args.runId)),
+  }),
+  defineTool({
+    name: 'msq_delete_page_run',
+    description:
+      'Delete one terminal run row from an Agent Page (owner cleanup of failed attempts). Removes it from the '
+      + 'owner history AND the public history / ?run= permalink. Active (queued/running) runs return 409.',
+    parameters: PageRunIdsSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'DELETE',
+        path: `core/pages/${encodePathSegment(args.id)}/runs/${encodePathSegment(args.runId)}`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_get_page_preview_token',
+    description:
+      'Mint a 15-minute draft-preview token for an Agent Page and return the preview path/URL '
+      + '(<publicOrigin>/p/preview/<pageId>?token=...). Renders the latest completed run of any view, even for drafts.',
+    parameters: PageIdSchema,
+    run: async (client, args) => {
+      const [tokenResponse, pageResponse] = await Promise.all([
+        client.requestJson({
+          method: 'GET',
+          path: `core/pages/${encodePathSegment(args.id)}/preview-token`,
+        }),
+        fetchPageRecord(client, args.id),
+      ])
+      const parsed = PagePreviewTokenResponseSchema.parse(tokenResponse)
+      const origin = pageResponse.publicOrigin?.replace(/\/+$/, '')
+      return {
+        ...parsed,
+        ...(origin ? { url: `${origin}${parsed.path}?token=${encodeURIComponent(parsed.token)}` } : {}),
+      }
+    },
+  }),
+  defineTool({
+    name: 'msq_get_page_email_preview',
+    description:
+      'Render the subscriber-email HTML for an Agent Page from its latest completed run (inline-styled, '
+      + '560px table layout). 404 when the page has no completed run yet.',
+    parameters: PageIdSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: `core/pages/${encodePathSegment(args.id)}/email-preview`,
+      })
+      return PageEmailPreviewResponseSchema.parse(response)
+    },
+  }),
+  defineTool({
+    name: 'msq_list_x402_networks',
+    description:
+      'List the x402 payment networks for paid pages/agents with an `available` flag (allowed by the platform AND '
+      + 'supported by the facilitator). Use an available `network` id in a page\'s payment config.',
+    parameters: EmptySchema,
+    run: async (client) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: 'core/x402/networks',
+      })
+      return X402NetworksResponseSchema.parse(response)
+    },
+  }),
+  defineTool({
+    name: 'msq_get_public_page',
+    description:
+      'Fetch the anonymous public descriptor of a LIVE page by slug (what /p/<slug> renders from): header, '
+      + 'sourceType, layout, run mode, schedule views, input form, payment, listing flags. Returns '
+      + '{ redirect: { slug } } for a renamed slug and 404 for drafts, unpublished, private-to-others or unknown slugs. '
+      + 'Use it to verify a page after publishing.',
+    parameters: PublicPageSlugSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'GET',
+        root: 'origin',
+        path: `api/public/pages/${encodePathSegment(args.slug)}`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_get_public_page_content',
+    description:
+      'Fetch the public edition content of a LIVE scheduled page: latest edition of a view (daily | weekly | '
+      + 'monthly) or a specific `period`. Returns { view, periodKey, runId, producedAt, content, mergedCount?, '
+      + 'recentPeriods }. 404 until an edition exists. On-demand results are only reachable per run via '
+      + 'msq_get_public_page_run.',
+    parameters: PublicPageContentSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'GET',
+        root: 'origin',
+        path: `api/public/pages/${encodePathSegment(args.slug)}/content`,
+        query: { view: args.view, period: args.period },
+      }),
+  }),
+  defineTool({
+    name: 'msq_list_public_page_runs',
+    description:
+      'List the public run history of a LIVE on-demand page that stores history (404 otherwise): '
+      + '{ runs: [{ runId, inputSummary, badge?, completedAt }], total }. Optional `q` searches input summaries.',
+    parameters: PublicPageRunsListSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'GET',
+        root: 'origin',
+        path: `api/public/pages/${encodePathSegment(args.slug)}/runs`,
+        query: { q: args.q, limit: args.limit, offset: args.offset },
+      }),
+  }),
+  defineTool({
+    name: 'msq_run_public_page',
+    description:
+      'Run a LIVE on-demand page exactly as an anonymous visitor would (free runs only; counts against the '
+      + 'page\'s daily free-run cap; 402 for paid pages, 409 when 3 runs are already active, 429 at the cap). '
+      + 'Returns { runId } (202) — then use msq_get_public_page_run to wait for the result.',
+    parameters: PublicPageRunCreateSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'POST',
+        root: 'origin',
+        path: `api/public/pages/${encodePathSegment(args.slug)}/runs`,
+        body: { input: args.input ?? {} },
+      })
+      return {
+        slug: args.slug,
+        ...PageRunStartedResponseSchema.parse(response),
+      }
+    },
+  }),
+  defineTool({
+    name: 'msq_get_public_page_run',
+    description:
+      'Wait for a public page run to finish (follows the run\'s server-sent event stream, then re-reads the run) '
+      + 'and return the public run detail: completed -> { runId, status, content, producedAt, inputSummary? }; '
+      + 'error -> { runId, status, error } with the SAFE public error copy (owners see raw errors via '
+      + 'msq_list_page_runs). Gives up after `timeoutSeconds`; the run keeps executing.',
+    parameters: PublicPageRunSchema,
+    run: async (client, args) =>
+      waitForPublicPageRun(client, args.slug, args.runId, args.timeoutSeconds * 1000),
   }),
 ] as const
 
