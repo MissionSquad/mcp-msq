@@ -213,13 +213,23 @@ export const WorkflowCreateSchema = z.object({
   id: NonEmptyString.optional().describe('Optional workflow config id. If omitted, the server generates one.'),
   name: z.string().optional().describe('Workflow name. Defaults to "Untitled Workflow".'),
   mainAgentRef: z.string().nullable().optional().describe(
-    'Canonical main agent ref for the workflow. Use agent/<agentId> for owned agents, shared/<ownerUsername>/<slug> for shared agents, or null to clear.'
+    'Canonical main (orchestrator) agent ref. Use agent/<agentId> for owned agents (get ids from msq_list_agents), '
+    + 'shared/<ownerUsername>/<slug> for shared agents, or null to clear. The main agent receives the rendered '
+    + 'mainPrompt with every helper token replaced by that helper\'s output.'
   ),
   mainAgentId: z.string().nullable().optional().describe(
     'Legacy owned main agent id. Prefer mainAgentRef. MCP translates this to agent/<mainAgentId> before calling the API.'
   ),
-  mainPrompt: z.string().optional().describe('Main prompt containing helper agent patterns.'),
-  dataPayload: z.string().optional().describe('JSON string containing workflow data payload. Must be valid JSON if provided.'),
+  mainPrompt: z.string().optional().describe(
+    'Prompt for the main agent. Delegate to helper agents with tokens of the exact form <agent-name|#|dataKey> '
+    + '(e.g. <web-researcher|#|topic>): agent-name is the helper\'s exact name (the API canonicalizes it to '
+    + 'agent/<id>; unknown names are rejected), dataKey is a top-level key of dataPayload whose value is sent to '
+    + 'that helper as its input. Helpers run concurrently (see concurrency) before the main agent runs.'
+  ),
+  dataPayload: z.string().optional().describe(
+    'JSON STRING (not an object) of top-level keys referenced by helper tokens, e.g. \'{"topic":"solar"}\'. '
+    + 'Must be valid JSON. msq_run_workflow can override it per run.'
+  ),
   concurrency: z.number().int().positive().optional().describe('Maximum concurrent helper executions.'),
   delimiter: z.string().optional().describe('Delimiter used for helper patterns. Defaults to "|#|".'),
   failureMessage: z.string().optional().describe('Failure message used when a helper fails.'),
@@ -232,6 +242,16 @@ export const WorkflowUpdateSchema = WorkflowIdSchema.merge(
 
 export const WorkflowRunIdSchema = z.object({
   runId: NonEmptyString.describe('Workflow run id.'),
+})
+
+export const WorkflowRunsListSchema = z.object({
+  workflowId: NonEmptyString.describe('Workflow config id whose runs should be listed.'),
+  limit: z.number().int().positive().max(100).default(20).describe(
+    'Maximum number of runs to return, newest first. Defaults to 20 and is clamped to 100.'
+  ),
+  offset: z.number().int().min(0).default(0).describe(
+    'Zero-based offset into the workflow run history. Defaults to 0.'
+  ),
 })
 
 export const WorkflowRunCreateSchema = z.object({
@@ -447,7 +467,11 @@ export const FactoryCreateSchema = z.object({
   name: NonEmptyString.describe('Factory name.'),
   description: z.string().optional().describe('Optional human-readable description of the factory.'),
   steps: z.array(FactoryStepInputSchema).min(1).max(50).transform(withDefaultFactoryStepTransitions).describe(
-    'Full ordered step list for the factory. Send the complete desired step array.'
+    'Full ordered step list (1-50). Send the complete desired array. Minimal agent step: '
+    + '{"kind":"agent","name":"Fetch","agentRef":"agent/<agentId>"}; minimal workflow step: '
+    + '{"kind":"workflow","name":"Summarize","workflowRef":"<workflowConfigId>"}. transition defaults to next '
+    + '(last step: stop); stepId/index are generated when omitted. Each step receives the previous step\'s output '
+    + 'as the carry payload (step 1 gets initialCarryPayload).'
   ),
   continuous: z.boolean().optional().describe(
     'If true, the factory is intended to loop. Defaults to false.'
@@ -637,15 +661,20 @@ const SlackMetadataSchema = stringifiedObjectInput(z.object({
 }))
 
 export const CreateScheduledRunSchema = z.object({
-  agentName: NonEmptyString,
-  prompt: z.string().min(1),
-  startDate: z.number(),
-  timesToRun: z.array(ScheduleTimeSchema).min(1),
+  agentName: NonEmptyString.describe('Exact name of the agent to run.'),
+  prompt: z.string().min(1).describe('The user message sent to the agent on every scheduled execution.'),
+  startDate: z.number().describe('Unix epoch milliseconds from which the schedule is active.'),
+  timesToRun: z.array(ScheduleTimeSchema).min(1).describe('One or more UTC times of day to run.'),
   repeatInterval: z.enum(['daily', 'weekly', 'monthly', 'once']),
-  daysOfWeek: z.array(z.number().int().min(0).max(6)).optional(),
-  dayOfMonth: z.number().int().min(1).max(31).optional(),
+  daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().describe(
+    'Required for weekly: 0 = Sunday through 6 = Saturday.'
+  ),
+  dayOfMonth: z.number().int().min(1).max(31).optional().describe('Required for monthly.'),
   status: z.enum(['enabled', 'disabled']).default('enabled'),
-  sendEmail: z.boolean().optional(),
+  label: z.string().optional().describe('Optional display name for the schedule (shown in run listings and deliveries).'),
+  sendEmail: z.boolean().optional().describe(
+    'Email the result to the account owner after each run. Defaults to true on the server when omitted.'
+  ),
   deliveryMethod: z.enum(['email', 'slack']).optional(),
   slackWebhookUrl: z.string().url().optional(),
   slackMetadata: SlackMetadataSchema.optional(),
@@ -761,8 +790,9 @@ const PageLayoutItemFieldSchema = stringifiedObjectInput(PageLayoutItemFieldObje
 const PageLayoutFieldObjectSchema = z.object({
   name: SnakeCaseName.describe('Top-level field key, unique in the layout. snake_case, 1-40 chars.'),
   type: PageLayoutFieldTypeSchema.describe(
-    'Field type: richtext (synopsis/prose), text (heading/paragraph), number (stat box), '
-    + 'list (stats/stories/table), url (source link), enum (badge), image (https URL).'
+    'Field type: richtext (synopsis/prose; markdown limited to **bold**, *italic*, `code` and [links](https://…) — '
+    + 'no headings, images or raw HTML), text (heading/paragraph; rendered verbatim, no markdown), number (stat box), '
+    + 'list (stats/stories/table), url (source link; https/http only), enum (badge), image (https URL).'
   ),
   description: z.string().max(500).optional().describe(
     'Instruction to the model for this field — it is the JSON Schema description the model sees. '
@@ -804,7 +834,12 @@ const PageLayoutObjectSchema = z.object({
 
 export const PageLayoutSchema = stringifiedObjectInput(PageLayoutObjectSchema).describe(
   'Page layout DSL. The API compiles it to a strict draft-2020-12 JSON Schema (every field required, '
-  + 'additionalProperties false) that each run\'s content must satisfy. Accepts a JSON-stringified object.'
+  + 'additionalProperties false) that each run\'s content must satisfy. Blocks are type + display pairs, rendered '
+  + 'in order: richtext·synopsis (lede; first richtext defaults to it), richtext·paragraph, text·heading (h2), '
+  + 'text·paragraph, number·stat (single stat box), list·stats (stat grid; items label, value, optional delta text '
+  + 'and direction enum up/down/flat), list·stories (highlight cards; items heading, body), list·table (items = one '
+  + 'text/number/url/enum field per column), url·source ("Source <host>" link), enum·badge (colored pill), '
+  + 'image (https URL). Field descriptions are the instructions the model sees. Accepts a JSON-stringified object.'
 )
 
 const PageInputFieldObjectSchema = z.object({

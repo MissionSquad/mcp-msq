@@ -772,4 +772,66 @@ describe('MissionSquad workflow tools', () => {
       'Workflow completed without a completed main agent state.',
     )
   })
+
+  it('deletes a workflow config by id', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, message: 'Deleted' }))
+
+    const result = await callTool('msq_delete_workflow', { id: 'wf-1' })
+    const { url, init } = getRequest(fetchMock)
+
+    expect(url.pathname).toBe('/v1/core/workflows/wf-1')
+    expect(init.method).toBe('DELETE')
+    expect(result).toEqual({ success: true, message: 'Deleted' })
+  })
+
+  it('lists workflow runs as compact summaries with paging params', async () => {
+    const completed = { ...buildWorkflowRunRecord('completed', 'completed'), runId: 'run-1' }
+    const failed = { ...buildWorkflowRunRecord('error', 'error'), runId: 'run-2', errorMessage: 'helper failed' }
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: [completed, failed] }))
+
+    const result = await callTool('msq_list_workflow_runs', { workflowId: 'wf-1', limit: 5, offset: 0 })
+    const { url, init } = getRequest(fetchMock)
+
+    expect(url.pathname).toBe('/v1/core/workflows/wf-1/runs')
+    expect(url.searchParams.get('limit')).toBe('5')
+    expect(url.searchParams.get('offset')).toBe('0')
+    expect(init.method).toBe('GET')
+    expect(result).toEqual({
+      runs: [
+        {
+          runId: 'run-1',
+          workflowId: completed.workflowConfigId,
+          workflowName: completed.workflowNameSnapshot,
+          status: 'completed',
+          startedAt: completed.startedAt,
+          completedAt: 2000,
+          cancelledAt: undefined,
+          errorMessage: undefined,
+          aggregateUsage: completed.aggregateUsage,
+        },
+        {
+          runId: 'run-2',
+          workflowId: failed.workflowConfigId,
+          workflowName: failed.workflowNameSnapshot,
+          status: 'error',
+          startedAt: failed.startedAt,
+          completedAt: 2000,
+          cancelledAt: undefined,
+          errorMessage: 'helper failed',
+          aggregateUsage: failed.aggregateUsage,
+        },
+      ],
+    })
+  })
+
+  it('cancels a workflow run', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, found: true, cancelled: true, alreadyCancelled: false }))
+
+    const result = await callTool('msq_cancel_workflow_run', { runId: 'run-1' })
+    const { url, init } = getRequest(fetchMock)
+
+    expect(url.pathname).toBe('/v1/core/workflow-runs/run-1/cancel')
+    expect(init.method).toBe('POST')
+    expect(result).toEqual({ success: true, found: true, cancelled: true, alreadyCancelled: false })
+  })
 })

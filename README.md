@@ -127,6 +127,9 @@ endpoint, so an already-published agent is not unpublished.
 - `msq_run_workflow`
 - `msq_get_workflow_run_status`
 - `msq_get_workflow_result`
+- `msq_delete_workflow`
+- `msq_list_workflow_runs`
+- `msq_cancel_workflow_run`
 - `msq_list_factories`
 - `msq_get_factory`
 - `msq_create_factory`
@@ -281,6 +284,9 @@ Supported workflow operations:
 - start a workflow run with `msq_run_workflow`
 - inspect helper/main status with `msq_get_workflow_run_status`
 - fetch the final main-agent result with `msq_get_workflow_result`
+- list a workflow's recent runs with `msq_list_workflow_runs`
+- cancel an in-flight run with `msq_cancel_workflow_run`
+- delete a workflow config with `msq_delete_workflow`
 
 `msq_run_workflow` accepts:
 

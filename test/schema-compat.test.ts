@@ -136,6 +136,19 @@ describe('MCP schema compatibility parsing', () => {
     expect(scheduledRun.slackMetadata).toEqual(slackMetadata)
   })
 
+  it('keeps the optional scheduled-run label', () => {
+    const scheduledRun = CreateScheduledRunSchema.parse({
+      agentName: 'Agent',
+      prompt: 'Run this',
+      startDate: 1700000000000,
+      timesToRun: [{ hour: 9, minute: 0 }],
+      repeatInterval: 'daily',
+      label: 'Morning brief',
+    })
+
+    expect(scheduledRun.label).toBe('Morning brief')
+  })
+
   it('accepts JSON-stringified agent-page header, source, layout and config objects', () => {
     const header = { title: 'Topic Explainer', description: 'Desc', ownerDisplay: 'demo' }
     const source = { type: 'agent', id: 'agent-1' }

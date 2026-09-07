@@ -62,6 +62,7 @@ import {
   WorkflowIdSchema,
   WorkflowRunCreateSchema,
   WorkflowRunIdSchema,
+  WorkflowRunsListSchema,
   WorkflowUpdateSchema,
 } from './schemas.js'
 
@@ -219,6 +220,11 @@ const WorkflowRunResponseSchema = z.object({
   success: z.boolean(),
   runId: z.string().optional(),
   data: WorkflowRunRecordSchema,
+}).passthrough()
+
+const WorkflowRunListResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.array(WorkflowRunRecordSchema),
 }).passthrough()
 
 const FactoryStepTransitionSchema = z.discriminatedUnion('kind', [
@@ -557,6 +563,10 @@ function parseWorkflowRunResponse(payload: unknown): WorkflowRunRecord {
   return WorkflowRunResponseSchema.parse(payload).data
 }
 
+function parseWorkflowRunListResponse(payload: unknown): WorkflowRunRecord[] {
+  return WorkflowRunListResponseSchema.parse(payload).data
+}
+
 function parseWorkflowRunHydratedResponse(payload: unknown): WorkflowRunHydratedRecord {
   return WorkflowRunHydratedResponseSchema.parse(payload).data
 }
@@ -620,6 +630,18 @@ function mapWorkflowRunSummary(record: WorkflowRunRecord) {
     workflowName: record.workflowNameSnapshot,
     status: record.status,
     startedAt: record.startedAt,
+  }
+}
+
+function mapWorkflowRunList(runs: WorkflowRunRecord[]) {
+  return {
+    runs: runs.map((record) => ({
+      ...mapWorkflowRunSummary(record),
+      completedAt: record.completedAt ?? undefined,
+      cancelledAt: record.cancelledAt ?? undefined,
+      errorMessage: record.errorMessage ?? undefined,
+      aggregateUsage: record.aggregateUsage,
+    })),
   }
 }
 
@@ -2005,7 +2027,9 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_list_agents',
-    description: 'List your MissionSquad agents.',
+    description:
+      'List your agents with their ids, names, models and tools. Use the `id` for agent/<id> refs in workflows, '
+      + 'factories and page sources; use the `name` for msq_update_agent / msq_delete_agent.',
     parameters: EmptySchema,
     run: async (client) =>
       client.requestJson({
@@ -2075,7 +2099,8 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_delete_agent',
-    description: 'Delete an agent by name.',
+    description:
+      'Delete an agent by name. Check first that no workflow, factory step or page still references it.',
     parameters: DeleteAgentSchema,
     run: async (client, args) =>
       client.requestJson({
@@ -2133,7 +2158,11 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_create_workflow',
-    description: 'Create a MissionSquad workflow config.',
+    description:
+      'Create a workflow config: one main (orchestrator) agent whose mainPrompt delegates to helper agents via '
+      + '<agent-name|#|dataKey> tokens, plus a dataPayload JSON string of the keys those tokens read. Create the '
+      + 'agents first (msq_add_agent) and pass the main agent as mainAgentRef "agent/<id>". Test it with '
+      + 'msq_run_workflow -> msq_get_workflow_run_status -> msq_get_workflow_result.',
     parameters: WorkflowCreateSchema,
     run: async (client, args) => {
       const response = await client.requestJson({
@@ -2147,7 +2176,9 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_update_workflow',
-    description: 'Update a MissionSquad workflow config by id.',
+    description:
+      'Update a workflow config by id. Only the provided fields change (name, mainAgentRef, mainPrompt, '
+      + 'dataPayload, concurrency, delimiter, failure texts); omitted fields are preserved.',
     parameters: WorkflowUpdateSchema,
     run: async (client, args) => {
       const { id, ...body } = args
@@ -2162,7 +2193,10 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_run_workflow',
-    description: 'Start a MissionSquad workflow run in the background.',
+    description:
+      'Start a workflow run in the background and return its runId. Optional dataPayload (JSON string) overrides '
+      + 'the saved payload for this run only. Follow with msq_get_workflow_run_status (waits for completion) and '
+      + 'msq_get_workflow_result (final main-agent output).',
     parameters: WorkflowRunCreateSchema,
     run: async (client, args) => {
       const response = await client.requestJson({
@@ -2184,7 +2218,9 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_get_workflow_result',
-    description: 'Get the final main-agent result for a completed MissionSquad workflow run.',
+    description:
+      'Get the final main-agent output (content + usage) of a COMPLETED workflow run. Fails while the run is in '
+      + 'progress or if it ended in error — use msq_get_workflow_run_status first.',
     parameters: WorkflowRunIdSchema,
     run: async (client, args) => {
       const hydrated = await fetchWorkflowRunHydratedRecord(client, args.runId)
@@ -2197,6 +2233,46 @@ const msqTools = [
 
       return mapWorkflowRunResult(record, hydrated)
     },
+  }),
+  defineTool({
+    name: 'msq_delete_workflow',
+    description: 'Delete a workflow config by id. Run history is retained; the config is gone.',
+    parameters: WorkflowIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'DELETE',
+        path: `core/workflows/${encodePathSegment(args.id)}`,
+      }),
+  }),
+  defineTool({
+    name: 'msq_list_workflow_runs',
+    description:
+      'List recent runs for one workflow config, newest first, as compact summaries (status, timestamps, error, '
+      + 'aggregate usage). Use msq_get_workflow_run_status / msq_get_workflow_result for one run\'s details.',
+    parameters: WorkflowRunsListSchema,
+    run: async (client, args) => {
+      const response = await client.requestJson({
+        method: 'GET',
+        path: `core/workflows/${encodePathSegment(args.workflowId)}/runs`,
+        query: {
+          limit: args.limit,
+          offset: args.offset,
+        },
+      })
+
+      return mapWorkflowRunList(parseWorkflowRunListResponse(response))
+    },
+  }),
+  defineTool({
+    name: 'msq_cancel_workflow_run',
+    description:
+      'Cancel a queued or running workflow run and report whether the cancellation happened now or had already happened.',
+    parameters: WorkflowRunIdSchema,
+    run: async (client, args) =>
+      client.requestJson({
+        method: 'POST',
+        path: `core/workflow-runs/${encodePathSegment(args.runId)}/cancel`,
+      }),
   }),
   defineTool({
     name: 'msq_list_factories',
@@ -2231,8 +2307,11 @@ const msqTools = [
   defineTool({
     name: 'msq_create_factory',
     description:
-      'Create a new factory config from a full factory definition. '
-      + 'MissionSquad normalizes missing step ids, step indices, and runtime defaults when the factory is saved.',
+      'Create a factory: an ordered chain of steps where each step (an agent or a workflow) receives the previous '
+      + 'step\'s output as its carry payload. Create the agents first, reference them as agentRef "agent/<id>", and '
+      + 'send the complete steps array; transitions default to next/stop and ids/indices are generated. Test it with '
+      + 'msq_run_factory -> msq_get_factory_run_status -> msq_get_factory_result; schedule it with '
+      + 'msq_create_factory_schedule.',
     parameters: FactoryCreateSchema,
     run: async (client, args) => {
       const response = await client.requestJson({
@@ -2792,7 +2871,9 @@ const msqTools = [
   }),
   defineTool({
     name: 'msq_create_scheduled_run',
-    description: 'Create a new scheduled run for an agent with timing and delivery options.',
+    description:
+      'Schedule an agent to run a fixed prompt on a timer (once/daily/weekly/monthly at UTC times) with optional '
+      + 'email or Slack delivery of the result. For factories use msq_create_factory_schedule instead.',
     parameters: CreateScheduledRunSchema,
     run: async (client, args) =>
       client.requestJson({
@@ -2882,9 +2963,19 @@ const msqTools = [
     description:
       'Create an Agent Page draft. A page = header + source (agent | workflow | factory) + layout (block DSL '
       + 'compiled to the JSON Schema every run must satisfy) + run mode (on-demand | scheduled). Drafts are not '
-      + 'public until msq_publish_page. Source must exist in your account. For on-demand pages the input-form '
-      + 'field names must match how the source reads input (see PageInputField.name). Layouts with url/image '
-      + 'fields need a Gemini model on agent-source pages (OpenAI rejects format "uri").',
+      + 'public until msq_publish_page. Source must exist in your account. '
+      + 'Typical flow: msq_create_page -> (workflow/factory sources only: msq_compile_page_layout_schema and paste '
+      + 'the schema into the final agent\'s prompt with "respond with ONLY the JSON object") -> msq_run_page_preview '
+      + '-> msq_get_page_run_status -> msq_get_page_run_result (fix the source/layout and re-run until the content '
+      + 'is right) -> msq_publish_page -> msq_get_public_page to verify. '
+      + 'Every run sends the source this user message: Produce the <view> edition of "<layout title>" for '
+      + '<period>. Fill every field of the required JSON output contract. Respond with only the JSON object. '
+      + 'On-demand runs append a fenced "Run input (validated)" JSON block with the visitor\'s input-form values, '
+      + 'so the source agent\'s prompt must say what to do with each input key, and the input-form field names '
+      + 'must match how the source reads them (see PageInputField.name). Agent-source pages get the layout schema '
+      + 'via response_format (do not paste it into the prompt); workflow/factory sources need it in the final '
+      + 'agent\'s prompt. Layouts with url/image fields need a Gemini model on agent-source pages (OpenAI rejects '
+      + 'format "uri"). The whole run must finish within 5 minutes.',
     parameters: PageCreateSchema,
     run: async (client, args) => {
       const response = await client.requestJson({
@@ -2901,8 +2992,10 @@ const msqTools = [
       'Update an Agent Page. Only provide the fields you want to change; every other field is preserved '
       + '(the API replaces the whole record, so this tool reads the current page and merges first). Pass null '
       + 'to remove an optional block (schedule, onDemand, payment, platformOptions, publicListed, visibility, '
-      + 'categories). Switching runMode drops the other mode\'s blocks automatically. Live pages are validated at '
-      + 'publish grade, and edits take effect on the next run without republishing.',
+      + 'categories). Merging is per top-level field: a provided block replaces the stored block wholesale (e.g. '
+      + 'pass the complete layout with all fields, or the complete onDemand config). Switching runMode drops the '
+      + 'other mode\'s blocks automatically. Live pages are validated at publish grade, and edits take effect on '
+      + 'the next run without republishing.',
     parameters: PageUpdateSchema,
     run: async (client, args) => {
       const current = await fetchPageRecord(client, args.id)
@@ -2989,8 +3082,11 @@ const msqTools = [
     name: 'msq_run_page_preview',
     description:
       'Start an owner-context run of an Agent Page (works for drafts and live pages; does not consume the free-run '
-      + 'cap). On-demand pages validate `input` against the input form; scheduled pages produce the current '
-      + 'period\'s base edition. Returns { runId } immediately (202) — then use msq_get_page_run_status.',
+      + 'cap). This is a REAL run, not a dry run: it executes the source, is stored in the page\'s run history, and '
+      + 'on live pages with storeHistory it appears in the public history like any visitor run (remove unwanted '
+      + 'rows with msq_delete_page_run). On-demand pages validate `input` against the input form; scheduled pages '
+      + 'produce the current period\'s base edition. Returns { runId } immediately (202) — then use '
+      + 'msq_get_page_run_status.',
     parameters: PagePreviewRunSchema,
     run: async (client, args) => {
       const response = await client.requestJson({
