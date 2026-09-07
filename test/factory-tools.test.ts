@@ -563,6 +563,66 @@ describe('MissionSquad factory tools', () => {
     expect(updateResult).toEqual({ factory: updatedFactory })
   })
 
+  it('accepts simplified factory steps and sends canonical steps to the API', async () => {
+    const createdFactory = buildCanonicalRefFactoryConfig('fac-simplified-created')
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: createdFactory }))
+
+    const payloadSchema = {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+      },
+      required: ['ok'],
+      additionalProperties: true,
+    }
+
+    const createResult = await callTool('msq_create_factory', {
+      name: 'Factory with simplified steps',
+      steps: [
+        {
+          type: 'agent',
+          agentRef: 'agent/agent-1',
+        },
+        {
+          type: 'workflow',
+          workflowRef: 'workflow/wf-123',
+          payloadSchema: JSON.stringify(payloadSchema),
+        },
+        {
+          type: 'agent',
+          agentRef: 'agent/agent-2',
+        },
+      ],
+    })
+    const createRequest = getRequestAt(fetchMock, 0)
+
+    expect(createRequest.url.pathname).toBe('/v1/core/factories')
+    expect(JSON.parse(String(createRequest.init.body))).toEqual({
+      name: 'Factory with simplified steps',
+      steps: [
+        {
+          kind: 'agent',
+          agentRef: { agentRef: 'agent/agent-1' },
+          transition: { kind: 'next' },
+        },
+        {
+          kind: 'workflow',
+          workflowRef: {
+            workflowConfigId: 'wf-123',
+            payloadSchema,
+          },
+          transition: { kind: 'next' },
+        },
+        {
+          kind: 'agent',
+          agentRef: { agentRef: 'agent/agent-2' },
+          transition: { kind: 'stop' },
+        },
+      ],
+    })
+    expect(createResult).toEqual({ factory: createdFactory })
+  })
+
   it('deletes factories and preserves the raw API response', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, message: 'Deleted' }))
 

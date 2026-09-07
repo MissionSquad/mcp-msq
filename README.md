@@ -13,6 +13,7 @@ This server exposes MissionSquad account-scoped operations for models, agents, p
 - Multipart file upload support (`POST /v1/files`)
 - Bounded binary file-content retrieval (`GET /v1/files/:id/content`) with truncation metadata
 - Compact MCP server discovery output for installed/enabled servers only
+- Agent Pages management (owner builder API under `/v1/core/pages`) plus the anonymous public page read/run surface
 - Build/test CI and npm publish workflow
 
 ## Verified API Coverage
@@ -102,7 +103,19 @@ If no API key is available, the tool returns a user-facing error.
 
 - `msq_list_agents`
 - `msq_add_agent`
+- `msq_publish_agent`
 - `msq_delete_agent`
+
+`msq_add_agent` automatically ensures the created or overwritten agent is published. Its normal
+creation response includes a `publish` field:
+
+- `success: true`, `alreadyPublished`, and the published-agent record when publishing succeeds
+- `success: false`, `error`, and optional API `status`/`details` when creation succeeded but
+  publishing failed
+
+`msq_publish_agent` accepts `agentId` and `agentName`. It is publish-only and idempotent from the
+MCP caller's perspective: it checks current publish records before invoking the API's toggle
+endpoint, so an already-published agent is not unpublished.
 
 ### Core Utilities
 
@@ -141,6 +154,37 @@ If no API key is available, the tool returns a user-facing error.
 - `msq_list_tool_functions`
 - `msq_list_servers`
 - `msq_list_server_tools`
+
+### Agent Pages
+
+Owner (builder) surface — authenticated with the API key:
+
+- `msq_list_pages`
+- `msq_get_page`
+- `msq_create_page`
+- `msq_update_page`
+- `msq_delete_page`
+- `msq_publish_page`
+- `msq_unpublish_page`
+- `msq_compile_page_layout_schema`
+- `msq_list_page_categories`
+- `msq_run_page_preview`
+- `msq_list_page_runs`
+- `msq_get_page_run_status`
+- `msq_get_page_run_result`
+- `msq_delete_page_run`
+- `msq_get_page_preview_token`
+- `msq_get_page_email_preview`
+- `msq_list_x402_networks`
+
+Public surface — what an anonymous visitor of `<publicOrigin>/p/<slug>` sees (served from the API origin at
+`/api/public/pages/...`, outside the `/v1` base path):
+
+- `msq_get_public_page`
+- `msq_get_public_page_content`
+- `msq_list_public_page_runs`
+- `msq_run_public_page`
+- `msq_get_public_page_run`
 
 ### Core Collections
 
@@ -293,6 +337,47 @@ Factory schedule notes:
 - `msq_create_factory_schedule` defaults to `repeatInterval: "once"` and `status: "enabled"` when omitted by the caller and backend
 - weekly schedules require `daysOfWeek`
 - monthly schedules require `dayOfMonth`
+
+## Agent Pages Lifecycle
+
+An Agent Page publishes an agent's, workflow's, or factory's output at a public URL
+(`<publicOrigin>/p/<slug>`), either as scheduled editions or as on-demand runs. A page is:
+
+- a **header** (title, description, owner byline, optional "Powered by" line),
+- a **source** (`agent` | `workflow` | `factory`, referenced by owned id),
+- a **layout** (block DSL compiled by the API to a strict JSON Schema every run must satisfy),
+- a **run mode** (`on-demand` with an optional visitor input form, or `scheduled` daily/weekly),
+- optional visibility (`publicListed: false` = unlisted, `visibility: 'private'` = owner-only), categories,
+  x402 per-run payment (on-demand only), and platform options (platform pages only).
+
+Recommended sequence:
+
+1. `msq_list_page_categories` (optional) and `msq_list_x402_networks` (paid pages only) for valid values.
+2. `msq_create_page` — returns a draft. Nothing is public yet.
+3. For workflow/factory sources: `msq_compile_page_layout_schema` and paste the schema into the final
+   agent's prompt so its raw output validates directly (skips the formatter call).
+4. `msq_run_page_preview` → `msq_get_page_run_status` → `msq_get_page_run_result` to prove the source
+   produces valid content before going live (owner runs do not count against the free-run cap).
+5. `msq_publish_page` — allocates the slug from the title (stable afterwards) and returns `publicUrl`.
+6. Verify as a visitor: `msq_get_public_page`, then `msq_run_public_page` → `msq_get_public_page_run`
+   for on-demand pages or `msq_get_public_page_content` for scheduled editions.
+7. Iterate with `msq_update_page` — prompt/layout edits apply on the next run without republishing.
+8. Clean up failed attempts with `msq_delete_page_run`; `msq_unpublish_page` before `msq_delete_page`.
+
+Notes:
+
+- `msq_update_page` is a read-modify-write: only the fields you pass change, `null` removes an optional
+  block, and switching `runMode` drops the other mode's blocks (unless supplied in the same call).
+- On-demand input-form field names must match how the source reads input: agent pages receive the fields
+  as a fenced "Run input" JSON block; workflow pages merge them over the workflow `dataPayload` (keys must
+  exist there); factory pages pass them as the initial carry payload.
+- Layouts containing `url` or `image` fields require a Gemini model on agent-source pages — OpenAI models
+  reject the compiled `format: "uri"` in strict `response_format`.
+- `msq_get_page_run_status` polls the owner run list (no owner-side event stream exists) up to
+  `timeoutSeconds` (default 360; server-side runs are capped at 5 minutes). `msq_get_public_page_run`
+  follows the public run's server-sent event stream instead.
+- Owner run rows carry the raw provider error text; the public run detail returns only the fixed safe copy.
+- Live pages return 409 on delete; deleted pages free their slug, unpublished pages keep it reserved.
 
 ## File Upload and Download Notes
 
