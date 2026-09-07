@@ -2,14 +2,6 @@
   "name": "@missionsquad/mcp-msq",
   "version": "0.6.0",
   "description": "MCP server interface for the MissionSquad API",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/MissionSquad/mcp-msq.git"
-  },
-  "homepage": "https://github.com/MissionSquad/mcp-msq#readme",
-  "bugs": {
-    "url": "https://github.com/MissionSquad/mcp-msq/issues"
-  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,7 +10,7 @@
     "README.md"
   ],
   "bin": {
-    "mcp-msq": "dist/index.js"
+    "mcp-msq": "./dist/index.js"
   },
   "scripts": {
     "clean": "rm -rf dist build",
