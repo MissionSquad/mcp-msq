@@ -704,6 +704,36 @@ describe('MissionSquad factory tools', () => {
     })
   })
 
+  it('lists manual, webhook, and scheduled runs together in API order', async () => {
+    const runs = [
+      buildFactoryRunRecord('completed', { runId: 'run-manual', trigger: 'manual' }),
+      buildFactoryRunRecord('completed', { runId: 'run-webhook', trigger: 'webhook' }),
+      buildFactoryRunRecord('completed', { runId: 'run-scheduled', trigger: 'scheduler' }),
+    ]
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: runs }))
+
+    await expect(callTool('msq_list_factory_runs', { factoryId: 'fac-123' })).resolves.toMatchObject({
+      runs: [
+        { runId: 'run-manual', trigger: 'manual', status: 'completed' },
+        { runId: 'run-webhook', trigger: 'webhook', status: 'completed' },
+        { runId: 'run-scheduled', trigger: 'scheduler', status: 'completed' },
+      ],
+    })
+  })
+
+  it.each([
+    'msq_list_factory_runs',
+    'msq_get_factory_run_status',
+    'msq_get_factory_result',
+  ])('rejects an unsupported run trigger in %s', async (name) => {
+    const run = buildFactoryRunRecord('completed', { trigger: 'unsupported' })
+    const isList = name === 'msq_list_factory_runs'
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: isList ? [run] : run }))
+
+    await expect(callTool(name, isList ? { factoryId: 'fac-123' } : { runId: 'run-123' }))
+      .rejects.toThrow("received 'unsupported'")
+  })
+
   it('starts factory runs with and without an initial carry payload', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, runId: 'run-123', data: buildFactoryRunRecord('queued') }, 202))
 
@@ -733,8 +763,8 @@ describe('MissionSquad factory tools', () => {
     })
   })
 
-  it('returns terminal factory status immediately without streaming', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: buildFactoryRunRecord('completed') }))
+  it.each(['manual', 'scheduler', 'webhook'])('returns terminal %s factory status without streaming', async (trigger) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: buildFactoryRunRecord('completed', { trigger }) }))
 
     const result = await callTool('msq_get_factory_run_status', { runId: 'run-123' })
 
@@ -743,6 +773,7 @@ describe('MissionSquad factory tools', () => {
       runId: 'run-123',
       status: 'completed',
       factoryId: 'fac-123',
+      trigger,
     })
   })
 
@@ -806,15 +837,15 @@ describe('MissionSquad factory tools', () => {
     })
   })
 
-  it('returns completed factory results and errors for non-completed states', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: buildFactoryRunRecord('completed') }))
+  it.each(['manual', 'scheduler', 'webhook'])('returns %s factory results and errors for non-completed states', async (trigger) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: buildFactoryRunRecord('completed', { trigger }) }))
 
     const successResult = await callTool('msq_get_factory_result', { runId: 'run-123' })
     expect(successResult).toEqual({
       runId: 'run-123',
       factoryId: 'fac-123',
       factoryName: 'YouTube Summary Factory',
-      trigger: 'manual',
+      trigger,
       status: 'completed',
       startedAt: 1000,
       completedAt: 2000,
@@ -846,7 +877,7 @@ describe('MissionSquad factory tools', () => {
     ]
 
     for (const scenario of scenarios) {
-      fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: buildFactoryRunRecord(scenario.status) }))
+      fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: buildFactoryRunRecord(scenario.status, { trigger }) }))
       await expect(callTool('msq_get_factory_result', { runId: 'run-123' })).rejects.toThrow(scenario.expected)
     }
   })

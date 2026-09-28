@@ -289,7 +289,7 @@ const FactoryRunRecordSchema = z.object({
   ownerUserId: z.string(),
   factoryNameSnapshot: z.string(),
   configSnapshot: z.unknown(),
-  trigger: z.enum(['manual', 'scheduler']),
+  trigger: z.enum(['manual', 'scheduler', 'webhook']),
   scheduleId: z.string().optional(),
   status: FactoryRunStatusSchema,
   cursor: z.object({
