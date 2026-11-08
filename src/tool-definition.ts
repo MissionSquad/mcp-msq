@@ -15,4 +15,3 @@ export function defineTool<TParams extends ToolParams>(
 ): MsqToolDefinition<TParams> {
   return definition
 }
-
