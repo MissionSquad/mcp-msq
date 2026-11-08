@@ -2,7 +2,7 @@
 
 MCP server interface for the MissionSquad platform API (`https://missionsquad.ai`).
 
-This server exposes MissionSquad account-scoped operations for models, agents, providers, vector stores, files, and core utilities via FastMCP tools.
+This server exposes MissionSquad account-scoped operations for models, agents, providers, vector stores, files, model evaluations, and core utilities via FastMCP tools.
 
 ## Features
 
@@ -79,6 +79,26 @@ Resolution order per request:
 If no API key is available, the tool returns a user-facing error.
 
 ## Tool Surface
+
+### Model Evals
+
+Requires MissionSquad API 1.89 or later. See the [model evaluation guide](docs/evals.md) for discovery, comparison, improvement, and result inspection.
+
+- `msq_get_eval_options`
+- `msq_list_evals`
+- `msq_get_eval`
+- `msq_create_eval`
+- `msq_update_eval`
+- `msq_delete_eval`
+- `msq_preview_eval_run`
+- `msq_start_eval_run`
+- `msq_list_eval_runs`
+- `msq_get_eval_run`
+- `msq_list_eval_results`
+- `msq_get_eval_result`
+- `msq_cancel_eval_run`
+- `msq_export_eval_run`
+- `msq_delete_eval_run`
 
 ### Core OpenAI-Compatible
 

@@ -24,6 +24,7 @@ interface JsonRequestOptions {
   body?: unknown
   headers?: Record<string, string | undefined>
   root?: RequestRoot
+  maxResponseBytes?: number
 }
 
 interface EventStreamRequestOptions {
@@ -84,6 +85,7 @@ function parseContentLength(rawHeader: string | null): number | null {
 async function readResponseBodyWithLimit(
   response: Response,
   maxBytes: number,
+  timeoutMs?: number,
 ): Promise<LimitedBufferResult> {
   if (!response.body) {
     return {
@@ -100,33 +102,45 @@ async function readResponseBodyWithLimit(
   let bytesKept = 0
   let truncated = false
 
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) {
-      break
-    }
+  let timedOut = false
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+    timedOut = true
+    void reader.cancel().catch(() => undefined)
+  }, timeoutMs)
 
-    if (!value) {
-      continue
-    }
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) {
+        break
+      }
 
-    bytesRead += value.byteLength
+      if (!value) {
+        continue
+      }
 
-    if (bytesKept < maxBytes) {
-      const remaining = maxBytes - bytesKept
-      const nextSlice = value.byteLength > remaining ? value.subarray(0, remaining) : value
+      bytesRead += value.byteLength
 
-      if (nextSlice.byteLength > 0) {
-        chunks.push(Buffer.from(nextSlice))
-        bytesKept += nextSlice.byteLength
+      if (bytesKept < maxBytes) {
+        const remaining = maxBytes - bytesKept
+        const nextSlice = value.byteLength > remaining ? value.subarray(0, remaining) : value
+
+        if (nextSlice.byteLength > 0) {
+          chunks.push(Buffer.from(nextSlice))
+          bytesKept += nextSlice.byteLength
+        }
+      }
+
+      if (bytesRead > maxBytes) {
+        truncated = true
+        await reader.cancel()
+        break
       }
     }
-
-    if (bytesRead > maxBytes) {
-      truncated = true
-      await reader.cancel()
-      break
-    }
+    if (timedOut) throw new MsqTransportError(`MissionSquad API response body timed out after ${timeoutMs}ms.`)
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    reader.releaseLock()
   }
 
   return {
@@ -197,7 +211,7 @@ export class MissionSquadClient {
       body,
     })
 
-    return this.parseStructuredResponse(response, url)
+    return this.parseStructuredResponse(response, url, options.maxResponseBytes)
   }
 
   public async consumeServerSentEvents(
@@ -424,8 +438,26 @@ export class MissionSquadClient {
     }
   }
 
-  private async parseStructuredResponse(response: Response, url: string): Promise<unknown> {
-    const payload = await this.parseResponseBody(response)
+  private async parseStructuredResponse(response: Response, url: string, maxBytes?: number): Promise<unknown> {
+    let payload: unknown
+    if (maxBytes === undefined) {
+      payload = await this.parseResponseBody(response)
+    } else {
+      const limited = await readResponseBodyWithLimit(response, maxBytes, this.requestConfig.httpTimeoutMs)
+      if (limited.truncated) {
+        throw new MsqTransportError(
+          `Eval export exceeds the ${maxBytes}-byte response limit. Use msq_list_eval_results and msq_get_eval_result to read evidence in pages, export CSV summaries, or explicitly increase maxBytes (up to 8388608).`,
+        )
+      }
+      const text = limited.buffer.toString('utf8')
+      if (response.headers.get('content-type')?.includes('application/json')) {
+        try { payload = JSON.parse(text) } catch {
+          throw new MsqTransportError('MissionSquad API returned invalid JSON for the bounded export.')
+        }
+      } else {
+        payload = text
+      }
+    }
 
     if (!response.ok) {
       throw new MsqApiError(

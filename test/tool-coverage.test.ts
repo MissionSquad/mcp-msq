@@ -103,6 +103,21 @@ const EXPECTED_TOOL_NAMES = [
   'msq_list_public_page_runs',
   'msq_run_public_page',
   'msq_get_public_page_run',
+  'msq_get_eval_options',
+  'msq_list_evals',
+  'msq_get_eval',
+  'msq_create_eval',
+  'msq_update_eval',
+  'msq_delete_eval',
+  'msq_preview_eval_run',
+  'msq_start_eval_run',
+  'msq_list_eval_runs',
+  'msq_get_eval_run',
+  'msq_list_eval_results',
+  'msq_get_eval_result',
+  'msq_cancel_eval_run',
+  'msq_export_eval_run',
+  'msq_delete_eval_run',
 ] as const
 
 describe('MissionSquad MCP tool coverage', () => {
