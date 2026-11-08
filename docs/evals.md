@@ -187,3 +187,34 @@ const improveSuite = await callTool('msq_create_eval', { definition: improve });
 This permits prompt changes only, caps search at two rounds to limit exploratory cost, requires a two percentage-point pass-rate gain, and allows no measured quality regression from the original baseline. For parameter tuning, provide explicit allowed arrays such as `temperature: [0, 0.2]` only after checking every selected model supports that control. Preview the new suite and review the larger call bound, including optimizer proposals, candidates, incumbent, held-out confirmation and any judge calls, before starting.
 
 Improve requires at least two independent case groups. Related examples should share a `group` so they stay together; ungrouped cases are independent. Only development cases reach the optimizer. The held-out split is deterministic; at least five independent held-out groups and complete matched pairs are required for statistical confirmation. This small example cannot supply that evidence. Repetitions are not independent groups, and a development winner is not a confirmed improvement. Build a larger representative set, inspect held-out coverage and uncertainty, and validate on fresh real-world data before relying on a winner.
+
+## Correcting invalid tool arguments
+
+Invalid eval arguments return an MCP tool response with `isError: true`. Its text is
+JSON with `error: "INVALID_TOOL_ARGUMENTS"`, a summary, and up to eight field issues.
+Each issue includes `field`, `message`, and a correction `hint` when helpful. If more
+issues remain, `additionalIssueCount` tells you how many. For example:
+
+```json
+{
+  "error": "INVALID_TOOL_ARGUMENTS",
+  "message": "Correct the fields below and call this tool again. No API request was sent.",
+  "issues": [
+    {
+      "field": "definition.concurrency",
+      "message": "Use a value less than or equal to 4."
+    },
+    {
+      "field": "definition.models[0].modelId",
+      "message": "This field is required. Supply a value of type string.",
+      "hint": "Use a configured modelId returned by msq_get_eval_options."
+    }
+  ]
+}
+```
+
+Correct those fields and call the tool again. These local validation failures make
+no API request and start no model calls. Submitted values, prompts and credentials
+are not echoed in the error. API errors still retain the API's explanation; a failed
+answer check is still an eval result rather than a tool-argument error. For a lost
+start response, retain the same submission key as described above.

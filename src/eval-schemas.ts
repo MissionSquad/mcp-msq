@@ -171,8 +171,8 @@ export const EvalSuiteIdSchema = z.object({ suiteId })
 export const EvalRunIdSchema = z.object({ runId })
 export const EvalPreviewSchema = z.object({ suiteId, revision })
 export const EvalStartSchema = EvalPreviewSchema.extend({
-  fingerprint: z.string().regex(/^[a-f0-9]{64}$/).describe('Fingerprint from the reviewed preview for this suite revision.'),
-  idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).describe('Caller-generated submission ID, such as a UUID. Reuse it with the same preview after an uncertain response. A new key can start new paid work.'),
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/, 'Use the complete 64-character lowercase hexadecimal preview fingerprint.').describe('Fingerprint from the reviewed preview for this suite revision.'),
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, 'Use 1–128 letters, digits, dots, underscores, colons or hyphens.').describe('Caller-generated submission ID, such as a UUID. Reuse it with the same preview after an uncertain response. A new key can start new paid work.'),
 })
 export const EvalListSchema = z.object(pageFields)
 export const EvalResultsSchema = z.object({

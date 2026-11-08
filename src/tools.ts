@@ -1,5 +1,6 @@
 import { defineTool } from './tool-definition.js'
 import { evalTools } from './eval-tools.js'
+import { deferredValidation, validateToolArguments } from './tool-validation.js'
 import type { FastMCP } from '@missionsquad/fastmcp'
 import { z } from 'zod'
 import { MsqApiError, toUserError } from './errors.js'
@@ -3259,21 +3260,24 @@ const msqTools = [
 export const MSQ_TOOL_NAMES = msqTools.map((tool) => tool.name)
 
 export function registerMissionSquadTools(server: FastMCP<undefined>): void {
+  const evalToolNames = new Set<string>(evalTools.map(tool => tool.name))
   for (const tool of msqTools) {
+    const detailedValidation = evalToolNames.has(tool.name)
     server.addTool({
       name: tool.name,
       description: tool.description,
-      parameters: tool.parameters,
+      parameters: detailedValidation ? deferredValidation(tool.parameters) : tool.parameters,
       execute: async (args, context) => {
         logger.info(`Tool: ${tool.name} - called`)
         logger.debug(`Tool: ${tool.name} - extraArgs keys: ${context.extraArgs ? Object.keys(context.extraArgs).join(', ') : 'none'}`)
         try {
+          const validatedArgs = detailedValidation ? validateToolArguments(tool.parameters, args) : args
           const client = createMissionSquadClient(context.extraArgs)
           const run = tool.run as (
             client: MissionSquadClient,
             args: unknown,
           ) => Promise<unknown>
-          const result = await run(client, args)
+          const result = await run(client, validatedArgs)
           logger.info(`Tool: ${tool.name} - success`)
           return stringifyResult(result)
         } catch (error) {
