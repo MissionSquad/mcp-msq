@@ -1,3 +1,5 @@
+import { defineTool } from './tool-definition.js'
+import { evalTools } from './eval-tools.js'
 import type { FastMCP } from '@missionsquad/fastmcp'
 import { z } from 'zod'
 import { MsqApiError, toUserError } from './errors.js'
@@ -65,21 +67,6 @@ import {
   WorkflowRunsListSchema,
   WorkflowUpdateSchema,
 } from './schemas.js'
-
-type ToolParams = z.ZodTypeAny
-
-interface MsqToolDefinition<TParams extends ToolParams> {
-  name: string
-  description: string
-  parameters: TParams
-  run: (client: MissionSquadClient, args: z.infer<TParams>) => Promise<unknown>
-}
-
-function defineTool<TParams extends ToolParams>(
-  definition: MsqToolDefinition<TParams>,
-): MsqToolDefinition<TParams> {
-  return definition
-}
 
 function encodePathSegment(value: string): string {
   return encodeURIComponent(value)
@@ -3266,6 +3253,7 @@ const msqTools = [
     run: async (client, args) =>
       waitForPublicPageRun(client, args.slug, args.runId, args.timeoutSeconds * 1000),
   }),
+  ...evalTools,
 ] as const
 
 export const MSQ_TOOL_NAMES = msqTools.map((tool) => tool.name)

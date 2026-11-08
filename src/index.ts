@@ -9,7 +9,7 @@ routeConsoleStdoutToStderr()
 
 const server = new FastMCP<undefined>({
   name: 'mcp-msq',
-  version: '0.1.0',
+  version: '0.8.0',
 })
 
 registerMissionSquadTools(server)
