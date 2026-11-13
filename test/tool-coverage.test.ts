@@ -113,6 +113,8 @@ const EXPECTED_TOOL_NAMES = [
   'msq_start_eval_run',
   'msq_list_eval_runs',
   'msq_get_eval_run',
+  'msq_wait_eval_run',
+  'msq_regrade_eval_run',
   'msq_list_eval_results',
   'msq_get_eval_result',
   'msq_cancel_eval_run',

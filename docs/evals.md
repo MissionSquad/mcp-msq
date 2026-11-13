@@ -1,8 +1,8 @@
 # Model evaluations through MCP
 
-Requires MissionSquad API **1.89 or later** and an authenticated MCP server (see [configuration](../README.md#configuration)). An eval is a saved task definition; a run freezes a reviewed revision and executes it asynchronously. Creating, updating, discovering, and previewing do not call models. Starting a run incurs model usage and may incur charges.
+Requires MissionSquad API **1.89 or later** (re-grading, failed-trial reporting and preview warnings need **1.93 or later**) and an authenticated MCP server (see [configuration](../README.md#configuration)). An eval is a saved task definition; a run freezes a reviewed revision and executes it asynchronously. Creating, updating, discovering, and previewing do not call models. Starting a run incurs model usage and may incur charges.
 
-The examples below assume an existing MCP client and a `callTool(name, arguments)` function that returns the parsed JSON text from the tool response. MCP clients differ in their connection and response APIs; adapt this small wrapper to your client. Fail on transport errors, MCP `isError`, malformed JSON, or an API response with `success: false`; do not treat an error as an empty result. The JSON export is unwrapped, unlike the usual `{success, data}` API response. Keep credentials in the server environment, not in a saved definition.
+The examples below assume an existing MCP client and a `callTool(name, arguments)` function that returns the parsed JSON text from the tool response. MCP clients differ in their connection and response APIs; adapt this small wrapper to your client. Fail on transport errors, MCP `isError`, malformed JSON, or an API response with `success: false`; do not treat an error as an empty result. Eval tools return compact JSON. The JSON export is unwrapped, unlike the usual `{success, data}` API response, and the CSV export is plain CSV text, not JSON. Keep credentials in the server environment, not in a saved definition.
 
 ## Compare sentiment classification
 
@@ -66,7 +66,7 @@ const preview = await callTool('msq_preview_eval_run', { suiteId, revision });
 console.log(preview.data);
 ```
 
-In a separate session, reconstruct the definition from `msq_get_eval` using only definition fields; do not send `id`, `ownerUserId`, `revision`, or timestamps. Preview checks support, limits, allowances, pricing, split and the maximum total calls. Inspect its resolved settings, roles and `maximumCalls`. Compare uses models × cases × repetitions target calls; a judge can add one call per completed target. Spend caps require known prices for every target, judge and optimizer. Preview makes no model calls.
+In a separate session, reconstruct the definition from `msq_get_eval` using only definition fields; do not send `id`, `ownerUserId`, `revision`, or timestamps. Preview checks support, limits, allowances, pricing, split and the maximum total calls. It returns a short form: the fingerprint, `maximumCalls`, case counts, the resolved targets, judge and optimizer with their effective settings, and `warnings`. Read the warnings: they name saved model settings that the eval dropped or replaced, which means the eval differs from how that model runs elsewhere. Pass `includePlan: true` for the complete frozen plan. Compare uses models × cases × repetitions target calls; a judge can add one call per completed target. Spend caps require known prices for every target, judge and optimizer. Preview makes no model calls.
 
 ### Start only after reviewing the plan
 
@@ -84,15 +84,21 @@ const started = await callTool('msq_start_eval_run', submission);
 const runId = started.data.id;
 ```
 
-If the start response times out or is lost, retry the **identical** submission with the same key; generating a new key can incur another run. A stale-plan 409 requires a new preview and review before a new submission. A 410 means the old submission was deleted and cannot be replayed. Only one run can be active per account.
+If the start response times out or is lost, retry the **identical** submission with the same key; generating a new key can incur another run. A stale-plan 409 requires a new preview and review before a new submission. A 410 means the old submission was deleted and cannot be replayed. Only one run can be active per account, re-grades included.
+
+A request that fails does not end the run. It is kept as a failed trial with its reason, and the other requests carry on. A model that fails three requests in a row is skipped, and the remaining models finish. A run stops early only for its time, call or spend limit, a cancellation, or when every model has been skipped. Each model request has a 120-second timeout and is not retried.
 
 ## Inspect, export, and clean up
 
 ```js
-const report = await callTool('msq_get_eval_run', { runId });
-console.log(report.data.record, report.data.summary, report.data.spend, report.data.confirmation);
-// Poll every few seconds while queued, running, or cancelling, with your own deadline.
+// Wait instead of polling. timedOut means the run is still going: call it again.
+let report = await callTool('msq_wait_eval_run', { runId, timeoutSeconds: 600 });
+while (report.timedOut) report = await callTool('msq_wait_eval_run', { runId, timeoutSeconds: 600 });
+// The compact view has status, progress, timing, spend and one summary row per model.
+console.log(report.data.status, report.data.timing, report.data.spend, report.data.summary);
 // completed, cancelled, interrupted, paused, and error are terminal; paused cannot resume.
+// Each summary row reports failedTrials and failureReasons; report.data.skipped lists dropped models.
+// For the frozen plan and every prompt: callTool('msq_get_eval_run', { runId, view: 'full' }).
 
 const limit = 100;
 for (let offset = 0; offset <= 1000000;) {
@@ -162,7 +168,24 @@ const judge = {
 };
 ```
 
-Select `judgeModelId` from `options.data.models`. The same rubric applies to all targets without revealing their identity. Each completed target can add a paid judge call; malformed judgments remain ungraded. Combine this rubric with deterministic checks, and review explanations rather than treating a judge as ground truth.
+Select `judgeModelId` from `options.data.models`. The same rubric applies to all targets without revealing their identity. The rubric is limited to 8192 characters and each criterion description to 2048; `options.data.limits` lists every limit. Each completed target can add a paid judge call. The judge must reply with JSON scores; a reply that is cut off or cannot be read is requested once more, and a judgment that still cannot be read remains ungraded. Combine this rubric with deterministic checks, and review explanations rather than treating a judge as ground truth.
+
+By default the judge is shown the system prompt the answer was produced under (`includeSystemPrompt`, default `true`). Without it, a judge can mark a correct answer wrong for following a format the prompt required. Set `includeSystemPrompt: false` to judge on the rubric alone. Unless you override them, the judge runs at temperature 0 where the model accepts one, with an 8192-token output limit.
+
+### Re-grade without re-running the models
+
+If the rubric or a check turns out to be wrong, grade the finished run again. No target model is called, so only grading is paid for:
+
+```js
+const regrade = await callTool('msq_regrade_eval_run', {
+  runId,
+  judge: { ...judge, rubric: 'A corrected rubric.' },
+  idempotencyKey: crypto.randomUUID()
+});
+const regraded = await callTool('msq_wait_eval_run', { runId: regrade.data.id });
+```
+
+The re-grade is a separate run linked to the original (`kind: "regrade"`, `parentRunId`). Omit `judge` or `checks` to keep the original's. The original run is unchanged.
 
 To search for a better sentiment prompt, create a new definition based on the sentiment definition and select an optimizer model ID from options:
 
