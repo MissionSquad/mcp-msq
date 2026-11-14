@@ -80,7 +80,7 @@ export function compactEvalRunRecord(response: unknown): unknown {
   if (!run) return response
   return {
     success: true,
-    data: pick(run, ['id', 'suiteId', 'status', 'phase', 'kind', 'parentRunId', 'stopReason', 'callsStarted', 'completedTrials', 'createdAt', 'startedAt', 'completedAt', 'resumes', 'emailOnCompletion']),
+    data: pick(run, ['id', 'suiteId', 'status', 'phase', 'kind', 'parentRunId', 'stopReason', 'callsStarted', 'completedTrials', 'createdAt', 'startedAt', 'completedAt', 'resumes', 'emailOnCompletion', 'queuePosition']),
   }
 }
 
@@ -124,7 +124,7 @@ export function compactEvalRun(response: unknown): unknown {
   return {
     success: true,
     data: {
-      ...pick(run, ['id', 'suiteId', 'status', 'phase', 'kind', 'parentRunId', 'stopReason', 'resumes']),
+      ...pick(run, ['id', 'suiteId', 'status', 'phase', 'kind', 'parentRunId', 'stopReason', 'resumes', 'queuePosition']),
       terminal: isEvalRunTerminal(run.status),
       eval: pick(definition, ['name', 'description', 'mode', 'primaryMetric', 'repetitions']),
       ...(typeof record(run.report)?.summary === 'string' ? { whatIsEvaluated: record(run.report)?.summary } : {}),

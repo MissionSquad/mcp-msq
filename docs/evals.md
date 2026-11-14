@@ -84,7 +84,7 @@ const started = await callTool('msq_start_eval_run', submission);
 const runId = started.data.id;
 ```
 
-If the start response times out or is lost, retry the **identical** submission with the same key; generating a new key can incur another run. A stale-plan 409 requires a new preview and review before a new submission. A 410 means the old submission was deleted and cannot be replayed. Only one run can be active per account, re-grades included.
+If the start response times out or is lost, retry the **identical** submission with the same key; generating a new key can incur another run. A stale-plan 409 requires a new preview and review before a new submission. A 410 means the old submission was deleted and cannot be replayed. Starting never fails because another run is active. Each account runs one eval at a time; further runs, re-grades and resumed runs wait as `queued` in the order they joined the queue, and a waiting run reports `queuePosition` (1 means it starts next). An account may have a limited number of runs waiting (`limits.queuedRuns` in `msq_get_eval_options`, 10 by default); a start beyond that gets a 409.
 
 A request that fails does not end the run. It is kept as a failed trial with its reason, and the other requests carry on. A model that fails three requests in a row is skipped, and the remaining models finish. A run stops early only for its time, call or spend limit, a cancellation, or when every model has been skipped. Each model request has a 120-second timeout and is not retried.
 
@@ -96,7 +96,7 @@ let report = await callTool('msq_wait_eval_run', { runId, timeoutSeconds: 600 })
 while (report.timedOut) report = await callTool('msq_wait_eval_run', { runId, timeoutSeconds: 600 });
 // The compact view has status, progress, timing, spend and one summary row per model.
 console.log(report.data.status, report.data.timing, report.data.spend, report.data.summary);
-// completed, cancelled, interrupted, paused, and error are terminal; paused cannot resume.
+// completed, cancelled, interrupted, paused, and error are terminal; continue a paused run with msq_resume_eval_run or close it with msq_finish_eval_run.
 // Each summary row reports failedTrials and failureReasons; report.data.skipped lists dropped models.
 // For the frozen plan and every prompt: callTool('msq_get_eval_run', { runId, view: 'full' }).
 
