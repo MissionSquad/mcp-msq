@@ -227,6 +227,10 @@ export const EvalUpdateSchema = z.object({
   definition: EvalDefinitionSchema.describe('Complete replacement definition. Get the suite and its current revision before editing.'),
 })
 export const EvalSuiteIdSchema = z.object({ suiteId })
+export const EvalCloneSchema = z.object({
+  suiteId: suiteId.describe('ID of the saved eval to copy.'),
+  name: text(160).optional().describe('Name for the copy. Left out, the copy is named after the original with " (copy)" added.'),
+})
 export const EvalRunIdSchema = z.object({ runId })
 const idempotencyKey = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, 'Use 1–128 letters, digits, dots, underscores, colons or hyphens.')
 export const EvalRunViewSchema = z.object({
@@ -246,6 +250,10 @@ export const EvalRegradeSchema = z.object({
   if (value.judge === undefined && value.checks === undefined) issue(ctx, ['judge'], 'Provide a judge, checks, or both.')
   if (value.checks) { requireUnique(ctx, ['checks'], value.checks.map(item => item.id)); requireUsableChecks(ctx, value.checks) }
   if (value.judge) requireUnique(ctx, ['judge', 'criteria'], value.judge.criteria.map(item => item.id))
+})
+export const EvalRerunSchema = z.object({
+  runId: runId.describe('ID of the finished Compare run whose failed requests should be sent again.'),
+  idempotencyKey: idempotencyKey.describe('Caller-generated submission ID. Reuse it after an uncertain response to recover the same re-run.'),
 })
 export const EvalPreviewSchema = z.object({ suiteId, revision })
 export const EvalPreviewToolSchema = EvalPreviewSchema.extend({

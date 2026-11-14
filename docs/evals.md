@@ -164,6 +164,19 @@ await callTool('msq_create_eval', {
 - A run from before arms has one arm per model: its `armId` is the model id.
 - `msq_compare_eval_runs` matches the two runs' arms by arm id, so give the arms the same ids in both evals.
 
+## Copy an eval, or finish a run that had failures
+
+```js
+// A copy to change without touching the original. Nothing runs.
+const copy = await callTool('msq_clone_eval', { suiteId, name: 'Sentiment, shorter prompt' });
+
+// A finished Compare run where some requests failed: send only those again.
+const rerun = await callTool('msq_rerun_failed_eval_run', { runId, idempotencyKey: 'sentiment-rerun-01' });
+const finished = await callTool('msq_wait_eval_run', { runId: rerun.data.id });
+```
+
+`msq_rerun_failed_eval_run` creates a separate run linked to the original. It keeps the original's completed answers and grades and requests only what is missing: requests that failed or were cut off, and requests never sent because the run stopped or a model was skipped (a skipped model is tried again). Its spend covers only the requests it sends; its results cover the whole set. It returns a 409 when the run has not finished, is an Improve run or a re-grade, or has no failed requests.
+
 ## JSON extraction with portable checks
 
 A separate definition can test extracting a delivery date and order total. This schema validates structure and types; JSON Pointer checks are fixed across all cases, so only assert a common property there. Use additional cases and inspect trial outputs to assess each extracted value.

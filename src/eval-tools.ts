@@ -3,7 +3,7 @@ import { defineTool } from './tool-definition.js'
 import { MsqTransportError } from './errors.js'
 import type { MissionSquadClient } from './msq-client.js'
 import {
-  EvalCreateSchema, EvalUpdateSchema, EvalSuiteIdSchema, EvalRunIdSchema,
+  EvalCreateSchema, EvalUpdateSchema, EvalSuiteIdSchema, EvalCloneSchema, EvalRerunSchema, EvalRunIdSchema,
   EvalPreviewToolSchema, EvalStartSchema, EvalListSchema, EvalResultsSchema,
   EvalTrialSchema, EvalExportSchema, EvalRunViewSchema, EvalWaitSchema, EvalRegradeSchema,
   EvalOutputsSchema, EvalSummarySchema, EvalResumeSchema, EvalEmailSchema, EvalCompareRunsSchema,
@@ -121,6 +121,12 @@ export const evalTools = [
     run: (client, { suiteId }) => client.requestJson({ method: 'DELETE', path: `core/evals/${segment(suiteId)}` }),
   }),
   defineTool({
+    name: 'msq_clone_eval',
+    description: 'Copy a saved eval so you can change the copy without touching the original, for example to try a different prompt or set of models. Returns the new eval with its own data.id at revision 1. Nothing is run and no tokens are spent. Left without a name, the copy is called the original\'s name with " (copy)" added. Needs API 1.100 or later.',
+    parameters: EvalCloneSchema,
+    run: (client, { suiteId, name }) => client.requestJson({ method: 'POST', path: `core/evals/${segment(suiteId)}/clone`, body: name === undefined ? {} : { name } }),
+  }),
+  defineTool({
     name: 'msq_preview_eval_run',
     description: 'Review a saved suite revision before starting. Makes no model calls. Returns data.fingerprint, suiteRevision, maximumCalls (targets, judge requests and optimizer proposals), the resolved targets/judge/optimizer with their effective settings and whether each is priced, case counts, and data.warnings listing saved model settings that were dropped or replaced. Set includePlan=true for the complete frozen plan with every case and prompt. For example, 2 models × 3 examples × 3 repetitions means 18 target calls; adding a judge can add 18 more. Rejects unsupported settings you chose, unavailable models, exceeded allowances or a workload above maxCalls. A spend limit needs known pricing for every role. Then pass the fingerprint and revision to msq_start_eval_run.',
     parameters: EvalPreviewToolSchema,
@@ -161,6 +167,12 @@ export const evalTools = [
     description: 'Grade a finished run again with a new judge, new checks, or both, without calling any target model again. Use this when the rubric or a check was wrong: only grading is paid for, not the answers. Creates a separate run linked to the original (kind "regrade", parentRunId) and returns its data.id and status; then call msq_wait_eval_run on that id. Omitted judge or checks keep the original run\'s. The original run is unchanged. The run must be finished. The re-grade waits in the account\'s queue like any other run and reports queuePosition while it waits. Reuse the same idempotencyKey after an uncertain response to recover the same re-grade.',
     parameters: EvalRegradeSchema,
     run: async (client, { runId, ...body }) => compactEvalRunRecord(await client.requestJson({ method: 'POST', path: `core/eval-runs/${segment(runId)}/regrade`, body })),
+  }),
+  defineTool({
+    name: 'msq_rerun_failed_eval_run',
+    description: 'Complete a finished Compare run by sending again only the requests it is missing: ones that failed, were cut off, or were never sent because the run stopped or a model was skipped. Use this after fixing whatever made requests fail, instead of paying for the whole run again. Creates a separate run linked to the original (kind "rerun", parentRunId) that keeps the original\'s completed answers and grades, and returns its data.id and status; then call msq_wait_eval_run on that id. The new run\'s spend covers only the requests it sends; its results cover the whole set. Gets 409 when the run has not finished, is an Improve run or a re-grade, or has no failed requests. The original run is unchanged. Reuse the same idempotencyKey after an uncertain response to recover the same re-run. Needs API 1.100 or later.',
+    parameters: EvalRerunSchema,
+    run: async (client, { runId, idempotencyKey }) => compactEvalRunRecord(await client.requestJson({ method: 'POST', path: `core/eval-runs/${segment(runId)}/rerun-failed`, body: { idempotencyKey } })),
   }),
   defineTool({
     name: 'msq_get_eval_summary',

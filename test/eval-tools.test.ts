@@ -385,6 +385,23 @@ describe('eval MCP tools', () => {
     expect(view.data.summary.map(item => [item.armId, item.model])).toEqual([['brief', 'Brief prompt'], ['full', 'Full prompt']])
     expect(view.data.skipped).toEqual([{ id: 'v-full', armId: 'full', modelId: 'model-a', round: 0, skippedReason: 'Skipped.', model: 'Full prompt' }])
   })
+
+  it('copies an eval and re-runs a run\'s failed requests through their own routes', async () => {
+    fetchMock.mockImplementation(async () => response({ success: true, data: { id: 'copy', revision: 1, name: 'Second attempt' } }))
+    expect(await call('msq_clone_eval', { suiteId: 'suite-1', name: 'Second attempt' })).toMatchObject({ data: { id: 'copy', revision: 1 } })
+    let [url, init] = fetchMock.mock.calls[0]
+    expect([url, init.method, JSON.parse(init.body)]).toEqual(['https://api.missionsquad.invalid/v1/core/evals/suite-1/clone', 'POST', { name: 'Second attempt' }])
+    await call('msq_clone_eval', { suiteId: 'suite-1' })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({})
+
+    fetchMock.mockReset()
+    fetchMock.mockImplementation(async () => response({ success: true, data: { id: 'run-3', status: 'queued', kind: 'rerun', parentRunId: 'run-1', queuePosition: 1, plan: { definition: { systemPrompt: 'SECRET' } } } }))
+    // The new run is returned without its plan.
+    expect(await call('msq_rerun_failed_eval_run', { runId: 'run-1', idempotencyKey: 'rerun-1' }))
+      .toEqual({ success: true, data: { id: 'run-3', status: 'queued', kind: 'rerun', parentRunId: 'run-1', queuePosition: 1 } });
+    [url, init] = fetchMock.mock.calls[0]
+    expect([url, init.method, JSON.parse(init.body)]).toEqual(['https://api.missionsquad.invalid/v1/core/eval-runs/run-1/rerun-failed', 'POST', { idempotencyKey: 'rerun-1' }])
+  })
 })
 
 it('times out a stalled export body after headers arrive', async () => {
