@@ -164,6 +164,8 @@ await callTool('msq_create_eval', {
 - A run from before arms has one arm per model: its `armId` is the model id.
 - `msq_compare_eval_runs` matches the two runs' arms by arm id, so give the arms the same ids in both evals.
 
+An arm can also be a saved agent: `{ id: 'support', agentId: AGENT_ID }`, with `AGENT_ID` from `data.agents` in `msq_get_eval_options`. The arm sends the agent's system prompt to the agent's model with the agent's settings, as one request. The agent's tools, knowledge base and workflow do not run; `notReproduced` in the options, and warnings in the preview, say which of those the agent has. `sharedSettings` and the eval's `systemPrompt` are not applied to an agent arm; the arm's own `overrides` and `systemPrompt` are.
+
 ## Copy an eval, or finish a run that had failures
 
 ```js

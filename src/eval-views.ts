@@ -63,7 +63,7 @@ function armNames(plan: Json | undefined): Map<unknown, unknown> {
 function target(value: unknown): Json | undefined {
   const source = record(value)
   if (!source) return undefined
-  return { ...pick(source, ['armId', 'label', 'modelId', 'name', 'providerKey', 'model', 'responseMode', 'settings']), priced: source.pricing != null }
+  return { ...pick(source, ['armId', 'label', 'agentId', 'agentName', 'modelId', 'name', 'providerKey', 'model', 'responseMode', 'settings']), priced: source.pricing != null }
 }
 
 /** What an agent needs to review a preview and start it: identity, size, models and warnings. */

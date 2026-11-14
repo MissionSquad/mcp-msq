@@ -168,6 +168,10 @@ describe('eval MCP schemas', () => {
       { ...rest, arms: Array.from({ length: 11 }, (_, index) => arm(`arm-${index}`)) },
     ]) expect(EvalDefinitionSchema.safeParse(invalid).success).toBe(false)
     expect(EvalDefinitionSchema.safeParse({ ...rest, arms: [arm('a', { responseMode: 'schema', responseSchema: { type: 'object' } })] }).success).toBe(true)
+    // An arm names a model or an agent, never both or neither.
+    expect(EvalDefinitionSchema.parse({ ...rest, arms: [{ id: 'agent', agentId: 'saved-agent' }] }).arms?.[0]).toMatchObject({ agentId: 'saved-agent', overrides: {} })
+    expect(EvalDefinitionSchema.safeParse({ ...rest, arms: [{ id: 'both', agentId: 'saved-agent', modelId: 'saved-target' }] }).success).toBe(false)
+    expect(EvalDefinitionSchema.safeParse({ ...rest, arms: [{ id: 'neither' }] }).success).toBe(false)
   })
 
   it('requires exact preview identity and a caller-supplied submission key', () => {

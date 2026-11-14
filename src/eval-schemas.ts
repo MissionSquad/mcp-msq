@@ -45,7 +45,8 @@ const responseModeChoice = z.enum(['text', 'json', 'schema'])
 const arm = z.object({
   id: id.describe('Unique arm ID within this eval, such as brief-prompt.'),
   label: text(160).optional().describe('Name shown for this arm in results. Unique within the eval, ignoring case. Left out, the model\'s name is used.'),
-  modelId: id.describe('Configured MissionSquad model ID from the eval options tool. The same model may be used by several arms.'),
+  modelId: id.optional().describe('Configured MissionSquad model ID from the eval options tool. The same model may be used by several arms. Give either modelId or agentId, never both.'),
+  agentId: id.optional().describe('ID of a saved agent from data.agents in the eval options tool. The arm sends the agent\'s system prompt to the agent\'s model with the agent\'s settings as one request, without the agent\'s tools, knowledge base or workflow; sharedSettings and the eval\'s systemPrompt are not applied to it. Give either agentId or modelId, never both.'),
   overrides: settingOverrides.default({}).describe('Settings for this arm only, applied after sharedSettings. Omit a setting to inherit it; null clears the inherited value.'),
   systemPrompt: text(32_768, 0).optional().describe('System prompt for this arm only. Left out, the eval\'s systemPrompt is used.'),
   responseMode: responseModeChoice.optional().describe('Response mode for this arm only. Left out, the eval\'s responseMode is used.'),
@@ -177,6 +178,7 @@ export const EvalDefinitionSchema = z.object({
     const labels = arms.flatMap(item => item.label === undefined ? [] : [item.label.trim().toLowerCase()])
     if (new Set(labels).size !== labels.length) issue(ctx, ['arms'], 'Arm labels must differ, ignoring case.')
     arms.forEach((item, index) => {
+      if ((item.modelId === undefined) === (item.agentId === undefined)) issue(ctx, ['arms', index], 'Give the arm either a modelId or an agentId, not both.')
       if (item.responseMode === 'schema' && !item.responseSchema && !responseSchema) issue(ctx, ['arms', index, 'responseSchema'], 'Schema response mode requires a response schema on the arm or the eval.')
     })
   }
