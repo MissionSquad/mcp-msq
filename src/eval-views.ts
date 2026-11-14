@@ -186,7 +186,9 @@ export function evalSummaryView(response: unknown, lowest: Map<string, unknown> 
   const names = armNames(plan)
   const caseNames = new Map(list(record(plan?.definition)?.cases).map(item => [record(item)?.id, record(item)?.name]))
   const ranking = list(report.ranking).map(record).filter((item): item is Json => item !== undefined)
-    .map((item, index) => ({ rank: index + 1, model: names.get(armOf(item)) ?? armOf(item), ...pick(item, ['variantId', 'armId', 'modelId', 'value', 'withinNoise']) }))
+    .map((item, index) => ({ rank: index + 1, model: names.get(armOf(item)) ?? armOf(item), ...pick(item, ['variantId', 'armId', 'modelId', 'value', 'withinNoise', 'noiseBasis']),
+      // The paired difference from rank 1, when the API compared the two case by case.
+      ...(record(item.delta) ? { delta: pick(record(item.delta), ['delta', 'lower', 'upper']) } : {}) }))
   const lowestScored = list(compact.summary).map(record).filter((row): row is Json => row !== undefined && lowest.has(String(row.variantId)))
     .map(row => ({ variantId: row.variantId, model: row.model ?? row.modelId,
       answers: list(payload(lowest.get(String(row.variantId)))?.data ?? record(lowest.get(String(row.variantId)))?.data)
@@ -195,7 +197,7 @@ export function evalSummaryView(response: unknown, lowest: Map<string, unknown> 
     success: true,
     data: {
       ...compact,
-      ...(ranking.length ? { ranking, rankingNote: 'Best first by the primary metric. withinNoise means the gap to rank 1 is smaller than the measurement error, so the two cannot be told apart.' } : {}),
+      ...(ranking.length ? { ranking, rankingNote: 'Best first by the primary metric. withinNoise means the row cannot be told apart from rank 1. noiseBasis says why: tie (equal values), paired (compared case by case; delta is this row minus rank 1 with its 95% interval lower..upper, and the row is within noise when that interval includes zero), or standardError (the gap is smaller than the measurement error).' } : {}),
       ...(lowestScored.length ? { lowestScored } : {}),
     },
   }

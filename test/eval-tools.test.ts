@@ -257,7 +257,9 @@ describe('eval MCP tools', () => {
   it('summarises a run with its ranking and each model\'s lowest-scored answers', async () => {
     const report = { ...fullReport, record: { ...fullReport.record, report: { summary: 'Checks sentiment labels.', summaryModelId: 'judge' } },
       overview: { runTimeMs: 75_000, trials: { target: 6, judge: 5, optimizer: 0, failed: 1 }, totalCostUsd: 0.028, unpricedCalls: 0, cases: 1, models: 1, repetitions: 3 },
-      ranking: [{ variantId: 'variant-a', modelId: 'model-a', stage: 'baseline', round: 0, value: 81, withinNoise: false }] }
+      ranking: [{ variantId: 'variant-a', modelId: 'model-a', stage: 'baseline', round: 0, value: 81, withinNoise: false },
+        { variantId: 'variant-b', modelId: 'model-b', stage: 'baseline', round: 0, value: 79, withinNoise: true, noiseBasis: 'paired',
+          delta: { pairs: 6, independentGroups: 6, delta: -2, lower: -5, upper: 1, complete: true } }] }
     const lowest = { success: true, total: 5, data: [{ id: 't1', caseId: 'c', repetition: 0, status: 'completed', output: 'neutral', outputTruncated: false,
       inferenceIds: ['secret-receipt'], grade: { passed: false, judgeScore: 20, judgeCriteria: [{ id: 'label', score: 20, explanation: 'Wrong label.' }],
         checks: [{ id: 'exact', passed: false, message: 'Output does not match expected text' }, { id: 'json', passed: true }] } }] }
@@ -266,7 +268,9 @@ describe('eval MCP tools', () => {
     expect(summary.data).toMatchObject({
       status: 'completed', whatIsEvaluated: 'Checks sentiment labels.', timing: { runTimeMs: 75_000 },
       totals: { totalCostUsd: 0.028, trials: { failed: 1 } },
-      ranking: [{ rank: 1, model: 'Model A', modelId: 'model-a', value: 81, withinNoise: false }],
+      ranking: [{ rank: 1, model: 'Model A', modelId: 'model-a', value: 81, withinNoise: false },
+        // The paired difference is passed on without its bookkeeping fields.
+        { rank: 2, model: 'model-b', modelId: 'model-b', value: 79, withinNoise: true, noiseBasis: 'paired', delta: { delta: -2, lower: -5, upper: 1 } }],
       lowestScored: [{ variantId: 'variant-a', model: 'Model A', answers: [{ id: 't1', case: 'Case', output: 'neutral', passed: false, judgeScore: 20,
         judgeCriteria: [{ id: 'label', score: 20, explanation: 'Wrong label.' }], failedChecks: [{ id: 'exact', message: 'Output does not match expected text' }] }] }],
     })
