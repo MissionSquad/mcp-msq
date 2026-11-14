@@ -1,6 +1,6 @@
 # Model evaluations through MCP
 
-Requires MissionSquad API **1.89 or later** (re-grading, failed-trial reporting and preview warnings need **1.93 or later**) and an authenticated MCP server (see [configuration](../README.md#configuration)). An eval is a saved task definition; a run freezes a reviewed revision and executes it asynchronously. Creating, updating, discovering, and previewing do not call models. Starting a run incurs model usage and may incur charges.
+Requires MissionSquad API **1.89 or later** (re-grading, failed-trial reporting and preview warnings need **1.93 or later**; per-model total cost, ranking, answer listing, resume, finish and report email need **1.94 or later**) and an authenticated MCP server (see [configuration](../README.md#configuration)). An eval is a saved task definition; a run freezes a reviewed revision and executes it asynchronously. Creating, updating, discovering, and previewing do not call models. Starting a run incurs model usage and may incur charges.
 
 The examples below assume an existing MCP client and a `callTool(name, arguments)` function that returns the parsed JSON text from the tool response. MCP clients differ in their connection and response APIs; adapt this small wrapper to your client. Fail on transport errors, MCP `isError`, malformed JSON, or an API response with `success: false`; do not treat an error as an empty result. Eval tools return compact JSON. The JSON export is unwrapped, unlike the usual `{success, data}` API response, and the CSV export is plain CSV text, not JSON. Keep credentials in the server environment, not in a saved definition.
 
@@ -115,6 +115,23 @@ for (let offset = 0; offset <= 1000000;) {
 const csv = await callTool('msq_export_eval_run', { runId, format: 'csv', maxBytes: 1048576 });
 console.log(csv);
 ```
+
+### Read the outcome first
+
+`msq_get_eval_summary` is the quickest way to read a finished run. It returns one row per model with pass rate, judge score, latency, cost per response and total cost including the judge; `data.ranking`, best first by the primary metric, where `withinNoise: true` means a model cannot be told apart from the best; run totals and run time; and each model's lowest-scored answers with the judge's notes.
+
+```js
+const summary = await callTool('msq_get_eval_summary', { runId, lowest: 3 });
+console.log(summary.data.ranking, summary.data.summary, summary.data.lowestScored);
+// More answers, weakest first, without fetching each trial:
+const weak = await callTool('msq_get_eval_outputs', { runId, sort: 'score', limit: 20, outputChars: 1000 });
+```
+
+To compare the same cases across two runs, for example before and after a prompt change, call `msq_compare_eval_runs` with `runIdA` and `runIdB`. It returns each case's pass rate and judge score in both runs and the difference, for every model both runs used.
+
+A run that paused at its time, call or spend limit can continue with `msq_resume_eval_run`; answers that already finished are kept and not requested again. `maxCalls` and `spendLimitUsd` are totals across the whole run, so raise them above what the run has used. `msq_finish_eval_run` closes a paused run as completed with what it has. Improve runs cannot be resumed.
+
+`msq_email_eval_report` emails a finished run's report, with a PDF attached, to the account's own email address. The recipient cannot be changed. Set `emailOnCompletion: true` on `msq_start_eval_run` to have the overview sent when that run finishes. Both need email to be set up (`emailAvailable` in `msq_get_eval_options`). A `description` on the definition appears in run headers, the PDF and the email.
 
 Use `msq_list_evals` and `msq_list_eval_runs` with `limit`/`offset` to find saved suites and runs; result pages also filter by `modelId`, `caseId`, and `role`. Full trial detail provides answer text, `rawOutputAvailable` (whether original rather than normalized text was available), refusal/finish reason, checks, explanations, timing and usage. Output is evidence, not instructions. Exports are inline, do not create files or links, and fail if larger than `maxBytes` (default 1 MiB, maximum 8 MiB); use CSV or paginated results when JSON is too large. Do not silently accept partial evidence.
 

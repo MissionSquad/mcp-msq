@@ -37,7 +37,7 @@ export function isEvalRunTerminal(status: unknown): boolean {
 }
 
 /** `{ success, data }` envelopes are unwrapped; anything else is returned as it is. */
-function payload(response: unknown): Json | undefined {
+export function payload(response: unknown): Json | undefined {
   const envelope = record(response)
   return record(envelope?.data) ?? envelope
 }
@@ -80,7 +80,7 @@ export function compactEvalRunRecord(response: unknown): unknown {
   if (!run) return response
   return {
     success: true,
-    data: pick(run, ['id', 'suiteId', 'status', 'phase', 'kind', 'parentRunId', 'stopReason', 'callsStarted', 'completedTrials', 'createdAt', 'startedAt', 'completedAt']),
+    data: pick(run, ['id', 'suiteId', 'status', 'phase', 'kind', 'parentRunId', 'stopReason', 'callsStarted', 'completedTrials', 'createdAt', 'startedAt', 'completedAt', 'resumes', 'emailOnCompletion']),
   }
 }
 
@@ -89,7 +89,7 @@ function summaryRow(value: unknown, names: Map<unknown, unknown>): Json | undefi
   if (!row) return undefined
   const stat = (key: string, fields: string[]) => pick(record(row[key]), fields)
   return {
-    ...pick(row, ['variantId', 'modelId', 'stage', 'round', 'trials', 'completed', 'graded', 'passed', 'passRate',
+    ...pick(row, ['variantId', 'modelId', 'stage', 'round', 'trials', 'completed', 'graded', 'passed', 'passRate', 'judgeCalls',
       'requestSuccessRate', 'costPerPassUsd', 'failedTrials', 'failureReasons',
       'targetCostUsd', 'judgeCostUsd', 'totalCostUsd', 'costPerPassIncludingJudgeUsd', 'unpricedCalls']),
     ...(names.has(row.modelId) ? { model: names.get(row.modelId) } : {}),
@@ -117,26 +117,152 @@ export function compactEvalRun(response: unknown): unknown {
   const names = new Map(list(plan?.targets).map(item => [record(item)?.modelId, record(item)?.name]))
   const startedAt = numberOrUndefined(run.startedAt)
   const completedAt = numberOrUndefined(run.completedAt)
+  const overview = record(report.overview)
   const skipped = list(report.variants).map(record)
     .filter((variant): variant is Json => typeof variant?.skippedReason === 'string')
     .map(variant => pick(variant, ['id', 'modelId', 'round', 'skippedReason']))
   return {
     success: true,
     data: {
-      ...pick(run, ['id', 'suiteId', 'status', 'phase', 'kind', 'parentRunId', 'stopReason']),
+      ...pick(run, ['id', 'suiteId', 'status', 'phase', 'kind', 'parentRunId', 'stopReason', 'resumes']),
       terminal: isEvalRunTerminal(run.status),
-      eval: pick(definition, ['name', 'mode', 'primaryMetric', 'repetitions']),
+      eval: pick(definition, ['name', 'description', 'mode', 'primaryMetric', 'repetitions']),
+      ...(typeof record(run.report)?.summary === 'string' ? { whatIsEvaluated: record(run.report)?.summary } : {}),
       progress: { ...pick(run, ['completedTrials', 'callsStarted']), ...pick(plan, ['maximumCalls']) },
       timing: {
         ...pick(run, ['createdAt', 'startedAt', 'completedAt']),
-        ...(startedAt !== undefined && completedAt !== undefined ? { runTimeMs: completedAt - startedAt } : {}),
+        // The API adds up run time across resumes; an older API leaves it to the start and end times.
+        ...(numberOrUndefined(overview?.runTimeMs) !== undefined ? { runTimeMs: overview?.runTimeMs }
+          : startedAt !== undefined && completedAt !== undefined ? { runTimeMs: completedAt - startedAt } : {}),
       },
+      ...(overview ? { totals: pick(overview, ['trials', 'totalCostUsd', 'unpricedCalls', 'cases', 'models', 'repetitions']) } : {}),
       limits: pick(definition, ['maxCalls', 'maxDurationMs', 'spendLimitUsd']),
       spend: report.spend,
       summary: list(report.summary).map(row => summaryRow(row, names)).filter(Boolean),
       ...(list(report.confirmation).length ? { confirmation: report.confirmation } : {}),
       ...(skipped.length ? { skipped } : {}),
       ...(list(plan?.warnings).length ? { warnings: plan?.warnings } : {}),
+    },
+  }
+}
+
+/** A graded answer with the judge's notes, short enough to read many at once. */
+function gradedAnswer(value: unknown, caseNames: Map<unknown, unknown>): Json | undefined {
+  const trial = record(value)
+  if (!trial) return undefined
+  const grade = record(trial.grade)
+  return {
+    ...pick(trial, ['id', 'caseId', 'repetition', 'status', 'error', 'output', 'outputTruncated', 'finishReason']),
+    ...(caseNames.has(trial.caseId) ? { case: caseNames.get(trial.caseId) } : {}),
+    ...pick(grade, ['passed', 'judgeScore', 'judgeCriteria', 'error']),
+    failedChecks: list(grade?.checks).map(record).filter((check): check is Json => check?.passed === false).map(check => pick(check, ['id', 'message'])),
+  }
+}
+
+/**
+ * The per-model table, the ranking with its "within noise" flags, and optionally each model's
+ * lowest-scored answers with the judge's notes. `lowest` maps a variantId to a results page.
+ */
+export function evalSummaryView(response: unknown, lowest: Map<string, unknown> = new Map()): unknown {
+  const compact = payload(compactEvalRun(response))
+  const report = payload(response)
+  const run = record(report?.record)
+  if (!compact || !report || !run) return response
+  const plan = record(run.plan)
+  const names = new Map(list(plan?.targets).map(item => [record(item)?.modelId, record(item)?.name]))
+  const caseNames = new Map(list(record(plan?.definition)?.cases).map(item => [record(item)?.id, record(item)?.name]))
+  const ranking = list(report.ranking).map(record).filter((item): item is Json => item !== undefined)
+    .map((item, index) => ({ rank: index + 1, model: names.get(item.modelId) ?? item.modelId, ...pick(item, ['variantId', 'modelId', 'value', 'withinNoise']) }))
+  const lowestScored = list(compact.summary).map(record).filter((row): row is Json => row !== undefined && lowest.has(String(row.variantId)))
+    .map(row => ({ variantId: row.variantId, model: row.model ?? row.modelId,
+      answers: list(payload(lowest.get(String(row.variantId)))?.data ?? record(lowest.get(String(row.variantId)))?.data)
+        .map(item => gradedAnswer(item, caseNames)).filter(Boolean) }))
+  return {
+    success: true,
+    data: {
+      ...compact,
+      ...(ranking.length ? { ranking, rankingNote: 'Best first by the primary metric. withinNoise means the gap to rank 1 is smaller than the measurement error, so the two cannot be told apart.' } : {}),
+      ...(lowestScored.length ? { lowestScored } : {}),
+    },
+  }
+}
+
+/** A page of answers with their grades. */
+export function evalOutputsView(response: unknown, plan: unknown): unknown {
+  const envelope = record(response)
+  if (!envelope) return response
+  const caseNames = new Map(list(record(record(plan)?.definition)?.cases).map(item => [record(item)?.id, record(item)?.name]))
+  const names = new Map(list(record(plan)?.targets).map(item => [record(item)?.modelId, record(item)?.name]))
+  return {
+    success: true, total: envelope.total,
+    data: list(envelope.data).map(item => {
+      const trial = record(item)
+      const answer = gradedAnswer(item, caseNames)
+      return trial && answer ? { ...pick(trial, ['variantId', 'modelId', 'stage', 'round']), model: names.get(trial.modelId) ?? trial.modelId, ...answer } : undefined
+    }).filter(Boolean),
+  }
+}
+
+interface CaseStat { trials: number; graded: number; passed: number; scored: number; scoreSum: number }
+
+function caseStats(trials: unknown[]): Map<string, CaseStat> {
+  const stats = new Map<string, CaseStat>()
+  for (const item of trials) {
+    const trial = record(item)
+    if (!trial || typeof trial.caseId !== 'string' || typeof trial.modelId !== 'string') continue
+    const key = JSON.stringify([trial.modelId, trial.caseId])
+    const stat = stats.get(key) ?? { trials: 0, graded: 0, passed: 0, scored: 0, scoreSum: 0 }
+    const grade = record(trial.grade)
+    stat.trials++
+    if (typeof grade?.passed === 'boolean') { stat.graded++; if (grade.passed) stat.passed++ }
+    const judgeScore = numberOrUndefined(grade?.judgeScore)
+    if (judgeScore !== undefined) { stat.scored++; stat.scoreSum += judgeScore }
+    stats.set(key, stat)
+  }
+  return stats
+}
+
+/**
+ * Case by case, how run B differs from run A for each model both runs used. Only the first-stage
+ * (baseline) answers are compared. Cases or models present in one run only are listed, not compared.
+ */
+export function compareEvalRunsView(a: { report: unknown; trials: unknown[] }, b: { report: unknown; trials: unknown[] }): unknown {
+  const describe = (response: unknown) => {
+    const run = record(payload(response)?.record)
+    const plan = record(run?.plan)
+    return { run, cases: new Map(list(record(plan?.definition)?.cases).map(item => [String(record(item)?.id), record(item)?.name])),
+      models: new Map(list(plan?.targets).map(item => [String(record(item)?.modelId), record(item)?.name])) }
+  }
+  const left = describe(a.report), right = describe(b.report)
+  const statsA = caseStats(a.trials), statsB = caseStats(b.trials)
+  const rate = (stat: CaseStat | undefined) => stat?.graded ? stat.passed / stat.graded : null
+  const mean = (stat: CaseStat | undefined) => stat?.scored ? stat.scoreSum / stat.scored : null
+  const delta = (from: number | null, to: number | null) => from === null || to === null ? null : to - from
+  const rows = [...statsA.keys()].filter(key => statsB.has(key)).map(key => {
+    const parsed: unknown = JSON.parse(key)
+    const [modelId, caseId] = Array.isArray(parsed) ? parsed.map(String) : ['', '']
+    const from = statsA.get(key), to = statsB.get(key)
+    return { modelId, model: left.models.get(modelId) ?? modelId, caseId, case: left.cases.get(caseId) ?? caseId,
+      passRateA: rate(from), passRateB: rate(to), passRateDelta: delta(rate(from), rate(to)),
+      judgeScoreA: mean(from), judgeScoreB: mean(to), judgeScoreDelta: delta(mean(from), mean(to)) }
+  })
+  const modelIds = [...new Set(rows.map(row => row.modelId))]
+  const average = (values: Array<number | null>) => { const known = values.filter((value): value is number => value !== null); return known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : null }
+  const only = (mine: Map<string, CaseStat>, other: Map<string, CaseStat>) => [...new Set([...mine.keys()].filter(key => !other.has(key)).map(key => key))].length
+  return {
+    success: true,
+    data: {
+      runA: pick(left.run, ['id', 'status', 'createdAt']), runB: pick(right.run, ['id', 'status', 'createdAt']),
+      note: 'Deltas are run B minus run A. A positive pass-rate or judge-score delta means run B did better on that case. Averages are over cases, not weighted by repetitions.',
+      models: modelIds.map(modelId => {
+        const mine = rows.filter(row => row.modelId === modelId)
+        return { modelId, model: left.models.get(modelId) ?? modelId, casesCompared: mine.length,
+          meanPassRateDelta: average(mine.map(row => row.passRateDelta)), meanJudgeScoreDelta: average(mine.map(row => row.judgeScoreDelta)),
+          improvedCases: mine.filter(row => (row.judgeScoreDelta ?? row.passRateDelta ?? 0) > 0).length,
+          worseCases: mine.filter(row => (row.judgeScoreDelta ?? row.passRateDelta ?? 0) < 0).length }
+      }),
+      cases: rows,
+      notCompared: { onlyInA: only(statsA, statsB), onlyInB: only(statsB, statsA) },
     },
   }
 }
