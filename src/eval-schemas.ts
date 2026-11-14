@@ -103,6 +103,7 @@ function requireUnique(ctx: z.RefinementCtx, path: string[], ids: string[]) {
 
 export const EvalDefinitionSchema = z.object({
   name: text(160).describe('Suite label shown in the eval list and run history.'),
+  description: text(2000, 0).optional().describe('What this eval is for, in a sentence or two. Shown in run headers, PDF reports and report emails.'),
   mode: z.enum(['compare', 'improve']).default('compare').describe('Compare runs the same cases on selected models. Improve searches prompt or setting changes and measures held-out cases.'),
   systemPrompt: text(32_768, 0).describe('System message sent to every target. Use an empty string for no instructions.'),
   cases: z.array(evalCase).min(1).max(200).describe('Prompts and optional reference answers used to exercise the models.'),
@@ -199,6 +200,7 @@ export const EvalPreviewToolSchema = EvalPreviewSchema.extend({
 export const EvalStartSchema = EvalPreviewSchema.extend({
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/, 'Use the complete 64-character lowercase hexadecimal preview fingerprint.').describe('Fingerprint from the reviewed preview for this suite revision.'),
   idempotencyKey: idempotencyKey.describe('Caller-generated submission ID, such as a UUID. Reuse it with the same preview after an uncertain response. A new key can start new paid work.'),
+  emailOnCompletion: z.boolean().optional().describe('Email the overview report, with its PDF attached, to the account email when this run finishes. Off unless set. Fails with 409 where email is not set up (emailAvailable in msq_get_eval_options).'),
 })
 export const EvalListSchema = z.object(pageFields)
 export const EvalResultsSchema = z.object({
@@ -207,6 +209,45 @@ export const EvalResultsSchema = z.object({
   modelId: id.optional().describe('Only return trials run by this configured model.'),
   caseId: id.optional().describe('Only return trials associated with this case ID.'),
   role: z.enum(['target', 'judge', 'optimizer']).optional(),
+  variantId: id.optional().describe('Only return trials of this variant (summary rows carry variantId).'),
+  stage: z.enum(['baseline', 'incumbent', 'candidate', 'confirmation-baseline', 'confirmation-winner', 'judge', 'optimizer']).optional(),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'interrupted']).optional().describe('For example failed, to list failed requests with their error.'),
+  passed: z.boolean().optional().describe('Only graded trials that passed (true) or failed (false).'),
+  minScore: score.optional().describe('Only trials with a judge score at or above this.'),
+  maxScore: score.optional().describe('Only trials with a judge score at or below this.'),
+  sort: z.enum(['created', 'score', '-score']).optional().describe('score lists the lowest judge scores first, -score the highest. Sorting by score returns only judged trials.'),
+})
+const outputChars = z.number().int().min(1).max(20_000).default(2000).describe('Longest answer text returned per trial. Longer answers are cut and marked outputTruncated.')
+export const EvalOutputsSchema = z.object({
+  runId,
+  limit: z.number().int().min(1).max(50).default(10).describe('Maximum number of answers in this page.'),
+  offset: pageFields.offset,
+  modelId: id.optional().describe('Only answers from this configured model.'),
+  variantId: id.optional().describe('Only answers of this variant.'),
+  caseId: id.optional().describe('Only answers to this case.'),
+  passed: z.boolean().optional().describe('Only answers that passed (true) or failed (false).'),
+  sort: z.enum(['created', 'score', '-score']).optional().describe('score lists the lowest judge scores first.'),
+  outputChars,
+})
+export const EvalSummarySchema = z.object({
+  runId,
+  lowest: z.number().int().min(0).max(5).default(3).describe('How many of the lowest-scored answers to include per model, with the judge\'s notes. 0 leaves them out.'),
+  outputChars: outputChars.default(600),
+})
+export const EvalResumeSchema = z.object({
+  runId: runId.describe('ID of the paused run.'),
+  maxDurationMs: z.number().int().min(1000).max(7_200_000).optional().describe('Time allowed from this resume, in milliseconds. Omit to keep the run\'s time limit.'),
+  maxCalls: z.number().int().min(1).max(10_000).optional().describe('Total call limit across the whole run. Must be above the calls already started. Omit to keep it.'),
+  spendLimitUsd: z.number().finite().gt(0).optional().describe('Total spend limit across the whole run, in USD. Omit to keep it.'),
+})
+export const EvalEmailSchema = z.object({
+  runId,
+  attach: z.enum(['overview', 'full', 'none']).default('overview').describe('Which PDF report to attach. overview is a few pages; full adds distributions, coverage, one response per model and failures.'),
+})
+export const EvalCompareRunsSchema = z.object({
+  runIdA: runId.describe('The first run, for example the old prompt.'),
+  runIdB: runId.describe('The second run, for example the new prompt.'),
+  maxTrials: z.number().int().min(100).max(5000).default(2000).describe('Most target trials read from each run.'),
 })
 export const EvalTrialSchema = z.object({
   runId,

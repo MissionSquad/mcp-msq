@@ -202,11 +202,14 @@ describe('eval MCP tools', () => {
     vi.useFakeTimers()
     try {
       const running = { success: true, data: { ...fullReport, record: { ...fullReport.record, status: 'running', phase: 'baseline' } } }
-      fetchMock.mockResolvedValueOnce(response(running)).mockResolvedValueOnce(response(running)).mockResolvedValueOnce(response({ success: true, data: fullReport }))
+      fetchMock.mockResolvedValueOnce(response(running)).mockResolvedValueOnce(response(running))
+        .mockResolvedValueOnce(response({ success: true, data: fullReport })).mockResolvedValueOnce(response({ success: true, data: fullReport }))
       const finished = call('msq_wait_eval_run', { runId: 'run-1' })
       await vi.advanceTimersByTimeAsync(10_000)
       expect(await finished).toMatchObject({ success: true, data: { status: 'completed', terminal: true, timing: { runTimeMs: 60_000 } } })
-      expect(fetchMock).toHaveBeenCalledTimes(3)
+      // Three status polls without the plan, then one full read.
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+      expect(fetchMock.mock.calls.map(([url]) => new URL(url).searchParams.get('view'))).toEqual(['status', 'status', 'status', null])
       expect(await finished).not.toHaveProperty('timedOut')
 
       fetchMock.mockImplementation(async () => response(running))
@@ -249,6 +252,85 @@ describe('eval MCP tools', () => {
     } })
     expect(await call('msq_preview_eval_run', { suiteId: 'saved-eval', revision: 2, includePlan: true })).toEqual({ success: true, data: plan })
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ suiteId: 'saved-eval', revision: 2 })
+  })
+
+  it('summarises a run with its ranking and each model\'s lowest-scored answers', async () => {
+    const report = { ...fullReport, record: { ...fullReport.record, report: { summary: 'Checks sentiment labels.', summaryModelId: 'judge' } },
+      overview: { runTimeMs: 75_000, trials: { target: 6, judge: 5, optimizer: 0, failed: 1 }, totalCostUsd: 0.028, unpricedCalls: 0, cases: 1, models: 1, repetitions: 3 },
+      ranking: [{ variantId: 'variant-a', modelId: 'model-a', stage: 'baseline', round: 0, value: 81, withinNoise: false }] }
+    const lowest = { success: true, total: 5, data: [{ id: 't1', caseId: 'c', repetition: 0, status: 'completed', output: 'neutral', outputTruncated: false,
+      inferenceIds: ['secret-receipt'], grade: { passed: false, judgeScore: 20, judgeCriteria: [{ id: 'label', score: 20, explanation: 'Wrong label.' }],
+        checks: [{ id: 'exact', passed: false, message: 'Output does not match expected text' }, { id: 'json', passed: true }] } }] }
+    fetchMock.mockResolvedValueOnce(response({ success: true, data: report })).mockResolvedValueOnce(response(lowest))
+    const summary = await call('msq_get_eval_summary', { runId: 'run-1', lowest: 2 })
+    expect(summary.data).toMatchObject({
+      status: 'completed', whatIsEvaluated: 'Checks sentiment labels.', timing: { runTimeMs: 75_000 },
+      totals: { totalCostUsd: 0.028, trials: { failed: 1 } },
+      ranking: [{ rank: 1, model: 'Model A', modelId: 'model-a', value: 81, withinNoise: false }],
+      lowestScored: [{ variantId: 'variant-a', model: 'Model A', answers: [{ id: 't1', case: 'Case', output: 'neutral', passed: false, judgeScore: 20,
+        judgeCriteria: [{ id: 'label', score: 20, explanation: 'Wrong label.' }], failedChecks: [{ id: 'exact', message: 'Output does not match expected text' }] }] }],
+    })
+    expect(JSON.stringify(summary)).not.toMatch(/SECRET|secret-receipt/)
+    const query = Object.fromEntries(new URL(fetchMock.mock.calls[1][0]).searchParams)
+    expect(query).toEqual({ role: 'target', variantId: 'variant-a', stage: 'baseline', sort: 'score', limit: '2', offset: '0', include: 'output', outputChars: '600' })
+    fetchMock.mockResolvedValueOnce(response({ success: true, data: report }))
+    expect((await call('msq_get_eval_summary', { runId: 'run-1', lowest: 0 })).data).not.toHaveProperty('lowestScored')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('reads answers in bulk with their grades and case names', async () => {
+    fetchMock.mockImplementation(async (url: string) => url.includes('/results')
+      ? response({ success: true, total: 9, data: [{ id: 't2', variantId: 'variant-a', modelId: 'model-a', stage: 'baseline', round: 0, caseId: 'c', repetition: 1,
+        status: 'completed', output: 'positive', outputTruncated: true, grade: { passed: true, judgeScore: 90, checks: [] } }] })
+      : response({ success: true, data: fullReport }))
+    expect(await call('msq_get_eval_outputs', { runId: 'run-1', modelId: 'model-a', passed: true, sort: '-score', limit: 5, outputChars: 100 })).toEqual({
+      success: true, total: 9, data: [{ variantId: 'variant-a', modelId: 'model-a', stage: 'baseline', round: 0, model: 'Model A', id: 't2', caseId: 'c',
+        repetition: 1, status: 'completed', output: 'positive', outputTruncated: true, case: 'Case', passed: true, judgeScore: 90, failedChecks: [] }] })
+    const results = fetchMock.mock.calls.map(([url]) => new URL(url)).find(url => url.pathname.endsWith('/results'))!
+    expect(Object.fromEntries(results.searchParams)).toEqual({ limit: '5', offset: '0', modelId: 'model-a', passed: 'true', sort: '-score', role: 'target', include: 'output', outputChars: '100' })
+  })
+
+  it('compares two runs case by case for the models they share', async () => {
+    const trial = (modelId: string, caseId: string, passed: boolean, judgeScore: number) => ({ modelId, caseId, grade: { passed, judgeScore } })
+    const reportFor = (id: string) => ({ success: true, data: { ...fullReport, record: { ...fullReport.record, id } } })
+    fetchMock.mockImplementation(async (url: string) => {
+      const { pathname } = new URL(url)
+      const runId = pathname.split('/')[4]
+      if (!pathname.endsWith('/results')) return response(reportFor(runId))
+      return response({ success: true, total: 3, data: runId === 'run-a'
+        ? [trial('model-a', 'c', false, 40), trial('model-a', 'c', true, 60), trial('model-old', 'c', true, 80)]
+        : [trial('model-a', 'c', true, 90), trial('model-a', 'c', true, 70), trial('model-new', 'c', true, 80)] })
+    })
+    const compared = await call('msq_compare_eval_runs', { runIdA: 'run-a', runIdB: 'run-b' })
+    expect(compared.data).toMatchObject({
+      runA: { id: 'run-a' }, runB: { id: 'run-b' },
+      models: [{ modelId: 'model-a', model: 'Model A', casesCompared: 1, meanPassRateDelta: 0.5, meanJudgeScoreDelta: 30, improvedCases: 1, worseCases: 0 }],
+      cases: [{ modelId: 'model-a', caseId: 'c', case: 'Case', passRateA: 0.5, passRateB: 1, passRateDelta: 0.5, judgeScoreA: 50, judgeScoreB: 80, judgeScoreDelta: 30 }],
+      notCompared: { onlyInA: 1, onlyInB: 1 },
+    })
+  })
+
+  it('resumes, finishes and emails through the API without accepting a recipient', async () => {
+    fetchMock.mockImplementation(async () => response({ success: true, data: { id: 'run-1', status: 'queued', resumes: 1, plan: { definition: { systemPrompt: 'SECRET' } } } }))
+    expect(await call('msq_resume_eval_run', { runId: 'run-1', maxCalls: 400, maxDurationMs: 600_000 })).toEqual({ success: true, data: { id: 'run-1', status: 'queued', resumes: 1 } })
+    await call('msq_finish_eval_run', { runId: 'run-1' })
+    fetchMock.mockImplementation(async () => response({ success: true, data: { to: 'owner@example.test', attached: 'full' } }))
+    expect(await call('msq_email_eval_report', { runId: 'run-1', attach: 'full', to: 'someone-else@example.test' })).toEqual({ success: true, data: { to: 'owner@example.test', attached: 'full' } })
+    const sent = fetchMock.mock.calls.map(([url, init]) => [new URL(url).pathname.replace('/v1/core/eval-runs/', ''), init.method, init.body ? JSON.parse(init.body) : undefined])
+    expect(sent).toEqual([
+      ['run-1/resume', 'POST', { maxCalls: 400, maxDurationMs: 600_000 }],
+      ['run-1/finish', 'POST', undefined],
+      ['run-1/email', 'POST', { attach: 'full' }],
+    ])
+  })
+
+  it('passes the description and the completion email choice through, and the new result filters', async () => {
+    await call('msq_create_eval', { definition: { ...definition, description: 'Checks sentiment labels on support messages.' } })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).definition.description).toBe('Checks sentiment labels on support messages.')
+    await call('msq_start_eval_run', { suiteId: 'saved-eval', revision: 2, fingerprint, idempotencyKey: 'run-1', emailOnCompletion: true })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({ emailOnCompletion: true })
+    await call('msq_list_eval_results', { runId: 'run-1', status: 'failed', stage: 'baseline', passed: false, minScore: 10, sort: 'score' })
+    expect(Object.fromEntries(new URL(fetchMock.mock.calls[2][0]).searchParams)).toMatchObject({ status: 'failed', stage: 'baseline', passed: 'false', minScore: '10', sort: 'score' })
   })
 
   it('advertises text limits, the max effort and the judge option in the tool schema', () => {

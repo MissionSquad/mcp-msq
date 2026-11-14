@@ -82,7 +82,7 @@ If no API key is available, the tool returns a user-facing error.
 
 ### Model Evals
 
-Requires MissionSquad API 1.89 or later; `msq_regrade_eval_run`, failed-trial reporting and preview warnings need API 1.93 or later. Eval tools return compact JSON, and `msq_get_eval_run` returns a short view unless `view: "full"` is passed. See the [model evaluation guide](docs/evals.md) for discovery, comparison, improvement, and result inspection.
+Requires MissionSquad API 1.89 or later; `msq_regrade_eval_run`, failed-trial reporting and preview warnings need API 1.93 or later; the summary's costs and ranking, answer listing, resume, finish and report email need API 1.94 or later. Eval tools return compact JSON, and `msq_get_eval_run` returns a short view unless `view: "full"` is passed. See the [model evaluation guide](docs/evals.md) for discovery, comparison, improvement, and result inspection.
 
 - `msq_get_eval_options`
 - `msq_list_evals`
@@ -96,6 +96,12 @@ Requires MissionSquad API 1.89 or later; `msq_regrade_eval_run`, failed-trial re
 - `msq_get_eval_run`
 - `msq_wait_eval_run`
 - `msq_regrade_eval_run`
+- `msq_get_eval_summary`
+- `msq_get_eval_outputs`
+- `msq_compare_eval_runs`
+- `msq_resume_eval_run`
+- `msq_finish_eval_run`
+- `msq_email_eval_report`
 - `msq_list_eval_results`
 - `msq_get_eval_result`
 - `msq_cancel_eval_run`
