@@ -222,9 +222,9 @@ describe('eval MCP tools', () => {
   it('re-grades a finished run with a new judge and returns the new run without its plan', async () => {
     const judge = { model: { modelId: 'configured-judge' }, rubric: 'Score the sentiment label.', passScore: 70,
       criteria: [{ id: 'label', description: 'The label is right.', weight: 1 }] }
-    fetchMock.mockResolvedValueOnce(response({ success: true, data: { id: 'run-2', status: 'queued', phase: 'grading', kind: 'regrade', parentRunId: 'run-1', plan: { definition: { systemPrompt: 'SECRET' } } } }))
+    fetchMock.mockResolvedValueOnce(response({ success: true, data: { id: 'run-2', status: 'queued', phase: 'grading', kind: 'regrade', parentRunId: 'run-1', queuePosition: 2, plan: { definition: { systemPrompt: 'SECRET' } } } }))
     expect(await call('msq_regrade_eval_run', { runId: 'run-1', judge, idempotencyKey: 'regrade-1' }))
-      .toEqual({ success: true, data: { id: 'run-2', status: 'queued', phase: 'grading', kind: 'regrade', parentRunId: 'run-1' } })
+      .toEqual({ success: true, data: { id: 'run-2', status: 'queued', phase: 'grading', kind: 'regrade', parentRunId: 'run-1', queuePosition: 2 } })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('https://api.missionsquad.invalid/v1/core/eval-runs/run-1/regrade')
     expect(init.method).toBe('POST')
