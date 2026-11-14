@@ -54,11 +54,26 @@ const checkFields = {
   id: id.describe('Unique check ID.'),
   required: z.boolean().describe('Whether this check must pass for the answer to pass.'),
 }
+const caseInsensitive = z.boolean().optional().describe('Compare both sides in lower case.')
+const allowCodeFence = z.boolean().optional().describe('Read the JSON from inside an answer that is exactly one Markdown code block. Off by default: the answer is parsed as written.')
+const phrases = z.array(text(8192)).min(1).max(20).describe('1 to 20 phrases.')
+const bound = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional()
 const evalCheck = z.discriminatedUnion('type', [
-  z.object({ ...checkFields, type: z.literal('exact'), trim: z.boolean() }).strict(),
-  z.object({ ...checkFields, type: z.literal('contains'), text: text(8192) }).strict(),
-  z.object({ ...checkFields, type: z.literal('json') }).strict(),
-  z.object({ ...checkFields, type: z.literal('schema'), schema: jsonSchema }).strict(),
+  z.object({ ...checkFields, type: z.literal('exact'), trim: z.boolean(), caseInsensitive }).strict(),
+  z.object({ ...checkFields, type: z.literal('contains'), text: text(8192), caseInsensitive }).strict(),
+  z.object({ ...checkFields, type: z.literal('notContains'), phrases, caseInsensitive }).strict().describe('Passes when none of the phrases appears in the answer.'),
+  z.object({ ...checkFields, type: z.literal('containsAny'), phrases, caseInsensitive }).strict().describe('Passes when at least one phrase appears in the answer.'),
+  z.object({ ...checkFields, type: z.literal('containsAll'), phrases, caseInsensitive }).strict().describe('Passes when every phrase appears in the answer.'),
+  z.object({
+    ...checkFields, type: z.literal('regex'),
+    pattern: text(1024).describe('A JavaScript regular expression. Passes when it matches somewhere in the answer.'),
+    flags: z.string().max(4).regex(/^[imsu]*$/).optional().describe('Any of i, m, s and u, each once.'),
+  }).strict(),
+  z.object({ ...checkFields, type: z.literal('wordCount'), min: bound, max: bound }).strict().describe('Passes when the number of whitespace-separated words is within min and max. Give at least one of them.'),
+  z.object({ ...checkFields, type: z.literal('sentenceCount'), min: bound, max: bound }).strict().describe('Passes when the number of sentences is within min and max. Give at least one of them.'),
+  z.object({ ...checkFields, type: z.literal('maxChars'), max: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER) }).strict().describe('Passes when the answer has at most max characters.'),
+  z.object({ ...checkFields, type: z.literal('json'), allowCodeFence }).strict(),
+  z.object({ ...checkFields, type: z.literal('schema'), schema: jsonSchema, allowCodeFence }).strict(),
   z.object({
     ...checkFields,
     type: z.literal('jsonValue'),
@@ -69,6 +84,7 @@ const evalCheck = z.discriminatedUnion('type', [
     expected: z.unknown().refine(value => value !== undefined, {
       message: 'A JSON value check requires an expected value.',
     }).describe('Exact JSON value at the pointer, with its original type.'),
+    allowCodeFence,
   }).strict(),
 ])
 
@@ -101,6 +117,21 @@ function requireUnique(ctx: z.RefinementCtx, path: string[], ids: string[]) {
   if (new Set(ids).size !== ids.length) issue(ctx, path, 'IDs must be unique.')
 }
 
+/** Rules a single check must meet that span more than one of its fields. */
+function requireUsableChecks(ctx: z.RefinementCtx, checks: Array<z.infer<typeof evalCheck>>) {
+  checks.forEach((check, index) => {
+    if (check.type === 'wordCount' || check.type === 'sentenceCount') {
+      if (check.min === undefined && check.max === undefined) issue(ctx, ['checks', index], 'Give a minimum, a maximum, or both.')
+      else if (check.min !== undefined && check.max !== undefined && check.min > check.max) issue(ctx, ['checks', index, 'min'], 'The minimum is above the maximum.')
+    }
+    if (check.type === 'regex') {
+      const flags = check.flags ?? ''
+      if (new Set(flags).size !== flags.length) issue(ctx, ['checks', index, 'flags'], 'Use each flag once.')
+      try { new RegExp(check.pattern, flags) } catch { issue(ctx, ['checks', index, 'pattern'], 'This is not a valid regular expression.') }
+    }
+  })
+}
+
 export const EvalDefinitionSchema = z.object({
   name: text(160).describe('Suite label shown in the eval list and run history.'),
   description: text(2000, 0).optional().describe('What this eval is for, in a sentence or two. Shown in run headers, PDF reports and report emails.'),
@@ -125,6 +156,7 @@ export const EvalDefinitionSchema = z.object({
   const { cases, checks, judge, mode, models, primaryMetric, responseMode, responseSchema, search } = definition
   requireUnique(ctx, ['cases'], cases.map(item => item.id))
   requireUnique(ctx, ['checks'], checks.map(item => item.id))
+  requireUsableChecks(ctx, checks)
   requireUnique(ctx, ['models'], models.map(item => item.modelId))
   if (judge) requireUnique(ctx, ['judge', 'criteria'], judge.criteria.map(item => item.id))
 
@@ -190,7 +222,7 @@ export const EvalRegradeSchema = z.object({
   idempotencyKey: idempotencyKey.describe('Caller-generated submission ID. Reuse it after an uncertain response to recover the same re-grade run.'),
 }).superRefine((value, ctx) => {
   if (value.judge === undefined && value.checks === undefined) issue(ctx, ['judge'], 'Provide a judge, checks, or both.')
-  if (value.checks) requireUnique(ctx, ['checks'], value.checks.map(item => item.id))
+  if (value.checks) { requireUnique(ctx, ['checks'], value.checks.map(item => item.id)); requireUsableChecks(ctx, value.checks) }
   if (value.judge) requireUnique(ctx, ['judge', 'criteria'], value.judge.criteria.map(item => item.id))
 })
 export const EvalPreviewSchema = z.object({ suiteId, revision })

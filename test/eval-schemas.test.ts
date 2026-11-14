@@ -108,6 +108,14 @@ describe('eval MCP schemas', () => {
     ['missing exact answer', { checks: [{ id: 'exact', type: 'exact', required: true, trim: true }] }],
     ['missing expected JSON value', { checks: [{ id: 'value', type: 'jsonValue', required: true, pointer: '/status' }] }],
     ['invalid JSON Pointer', { checks: [{ id: 'value', type: 'jsonValue', required: true, pointer: '/~2', expected: true }] }],
+    ['a pattern that is not a regular expression', { checks: [{ id: 'p', type: 'regex', required: true, pattern: '(' }] }],
+    ['an unsupported pattern flag', { checks: [{ id: 'p', type: 'regex', required: true, pattern: 'x', flags: 'g' }] }],
+    ['a repeated pattern flag', { checks: [{ id: 'p', type: 'regex', required: true, pattern: 'x', flags: 'ii' }] }],
+    ['a count check with no bound', { checks: [{ id: 'w', type: 'wordCount', required: true }] }],
+    ['a count check with its bounds reversed', { checks: [{ id: 'w', type: 'sentenceCount', required: true, min: 3, max: 1 }] }],
+    ['an empty phrase list', { checks: [{ id: 'n', type: 'notContains', required: true, phrases: [] }] }],
+    ['too many phrases', { checks: [{ id: 'n', type: 'containsAny', required: true, phrases: Array(21).fill('x') }] }],
+    ['an option on a check that does not take it', { checks: [{ id: 'm', type: 'maxChars', required: true, max: 10, caseInsensitive: true }] }],
     ['search in compare mode', { search }],
     ['too few independent groups', { mode: 'improve', search }],
     ['nullable search candidates', {
@@ -128,6 +136,21 @@ describe('eval MCP schemas', () => {
     expect(parsed.sharedSettings).toEqual({ reasoningEffort: 'max' })
     expect(parsed.judge).toMatchObject({ includeSystemPrompt: false })
     expect(EvalDefinitionSchema.parse({ ...baseline, checks: [], judge, primaryMetric: 'judgeScore' }).judge).not.toHaveProperty('includeSystemPrompt')
+  })
+
+  it('accepts every check type with its options', () => {
+    const checks = [
+      { id: 'a', type: 'contains', required: true, text: 'ok', caseInsensitive: true },
+      { id: 'b', type: 'notContains', required: true, phrases: ['sorry'], caseInsensitive: true },
+      { id: 'c', type: 'containsAny', required: false, phrases: ['yes', 'no'] },
+      { id: 'd', type: 'containsAll', required: false, phrases: ['red', 'blue'] },
+      { id: 'e', type: 'regex', required: true, pattern: '^\\d{4}$', flags: 'im' },
+      { id: 'f', type: 'wordCount', required: true, max: 50 },
+      { id: 'g', type: 'sentenceCount', required: true, min: 1, max: 3 },
+      { id: 'h', type: 'maxChars', required: true, max: 280 },
+      { id: 'i', type: 'json', required: true, allowCodeFence: true },
+    ]
+    expect(EvalDefinitionSchema.parse({ ...baseline, checks }).checks).toEqual(checks)
   })
 
   it('requires exact preview identity and a caller-supplied submission key', () => {
