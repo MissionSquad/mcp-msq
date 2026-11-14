@@ -4,7 +4,7 @@ import { deferredValidation, validateToolArguments } from './tool-validation.js'
 import type { FastMCP } from '@missionsquad/fastmcp'
 import { z } from 'zod'
 import { MsqApiError, toUserError } from './errors.js'
-import { stringifyResult } from './json.js'
+import { compactResult, stringifyResult } from './json.js'
 import { logger } from './logger.js'
 import { createMissionSquadClient, type MissionSquadClient } from './msq-client.js'
 import {
@@ -3279,7 +3279,7 @@ export function registerMissionSquadTools(server: FastMCP<undefined>): void {
           ) => Promise<unknown>
           const result = await run(client, validatedArgs)
           logger.info(`Tool: ${tool.name} - success`)
-          return stringifyResult(result)
+          return detailedValidation ? compactResult(result) : stringifyResult(result)
         } catch (error) {
           if (error instanceof MsqApiError) {
             logger.error(

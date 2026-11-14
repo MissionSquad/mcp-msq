@@ -100,6 +100,9 @@ describe('eval MCP schemas', () => {
     ['duplicate case IDs', { cases: [...baseline.cases, ...baseline.cases] }],
     ['unknown routing fields', { models: [{ modelId: 'saved-target', overrides: { providerKey: 'openai' } }] }],
     ['out-of-range settings', { sharedSettings: { maxTokens: 32_769 } }],
+    ['a rubric over the limit', { judge: { ...judge, rubric: 'r'.repeat(8193) } }],
+    ['a name over the limit', { name: 'n'.repeat(161) }],
+    ['an unknown judge field', { judge: { ...judge, hidden: true } }],
     ['missing schema', { responseMode: 'schema' }],
     ['missing judge', { primaryMetric: 'judgeScore' }],
     ['missing exact answer', { checks: [{ id: 'exact', type: 'exact', required: true, trim: true }] }],
@@ -114,6 +117,17 @@ describe('eval MCP schemas', () => {
     }],
   ])('rejects %s', (_label, patch) => {
     expect(EvalDefinitionSchema.safeParse({ ...baseline, ...patch }).success).toBe(false)
+  })
+
+  it('accepts the max effort, the judge instruction option and text exactly at its limit', () => {
+    const parsed = EvalDefinitionSchema.parse({
+      ...baseline, checks: [], primaryMetric: 'judgeScore',
+      sharedSettings: { reasoningEffort: 'max' },
+      judge: { ...judge, rubric: 'r'.repeat(8192), includeSystemPrompt: false },
+    })
+    expect(parsed.sharedSettings).toEqual({ reasoningEffort: 'max' })
+    expect(parsed.judge).toMatchObject({ includeSystemPrompt: false })
+    expect(EvalDefinitionSchema.parse({ ...baseline, checks: [], judge, primaryMetric: 'judgeScore' }).judge).not.toHaveProperty('includeSystemPrompt')
   })
 
   it('requires exact preview identity and a caller-supplied submission key', () => {

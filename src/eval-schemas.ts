@@ -1,10 +1,13 @@
 import { z } from 'zod'
 
+/**
+ * A plain .max() is what puts maxLength into the advertised JSON Schema, so an agent can see
+ * the limit before it sends anything. Zod counts UTF-16 units where the API counts characters,
+ * so this is at most slightly stricter for text full of emoji; it never lets through what the
+ * API would reject.
+ */
 function text(max: number, min = 1) {
-  return z.string().min(min).refine(
-    value => [...value].length <= max,
-    { message: `Must contain at most ${max} characters.` },
-  )
+  return z.string().min(min).max(max)
 }
 
 const id = text(128)
@@ -20,7 +23,7 @@ const settings = {
   topK: z.number().int().min(1).max(1000).describe('Restrict sampling to this many of the most likely next tokens. Check model support in eval options.'),
   seed: seed.describe('Model sampling seed for providers that support it. The definition also has a separate seed for eval case splitting.'),
   stop: z.array(text(128)).max(4).describe('Up to four sequences that end generation when encountered. Check model support in eval options.'),
-  reasoningEffort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']).describe('Requested reasoning effort. Available levels depend on the configured model.'),
+  reasoningEffort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).describe('Requested reasoning effort. Available levels depend on the configured model.'),
   verbosity: z.enum(['low', 'medium', 'high']).describe('Requested answer detail. Check model support in eval options.'),
   frequency_penalty: z.number().min(-2).max(2).describe('Positive values discourage repeated tokens in proportion to how often they have appeared. Negative values encourage repetition. Check model support in eval options.'),
   presence_penalty: z.number().min(-2).max(2).describe('Positive values discourage tokens that have already appeared. Negative values favor reuse. Check model support in eval options.'),
@@ -71,13 +74,14 @@ const evalCheck = z.discriminatedUnion('type', [
 
 const evalJudge = z.object({
   model: selection,
-  rubric: text(8192).describe('Instructions for scoring the answer against the criteria. The judge does not receive the target model identity.'),
+  rubric: text(8192).describe('Instructions for scoring the answer against the criteria, at most 8192 characters. The judge does not receive the target model identity.'),
   criteria: z.array(z.object({
     id: id.describe('Unique stable criterion ID.'),
     description: text(2048).describe('What the judge should score on a 0 to 100 scale.'),
     weight: z.number().gt(0).max(100).describe('Relative contribution to the weighted judge score.'),
   }).strict()).min(1).max(20),
   passScore: score.describe('Minimum weighted score for the judgment to pass.'),
+  includeSystemPrompt: z.boolean().optional().describe('Show the judge the system prompt the answer was produced under, so output that follows an unusual required format is not marked wrong. Defaults to true. Set false to judge the answer on the rubric alone.'),
 }).strict()
 
 const evalSearch = z.object({
@@ -169,10 +173,32 @@ export const EvalUpdateSchema = z.object({
 })
 export const EvalSuiteIdSchema = z.object({ suiteId })
 export const EvalRunIdSchema = z.object({ runId })
+const idempotencyKey = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, 'Use 1–128 letters, digits, dots, underscores, colons or hyphens.')
+export const EvalRunViewSchema = z.object({
+  runId,
+  view: z.enum(['compact', 'full']).default('compact').describe('compact returns status, progress, timing, spend and one summary row per model, without the plan, cases or prompts. full returns the complete report including the frozen plan and every prompt.'),
+})
+export const EvalWaitSchema = z.object({
+  runId,
+  timeoutSeconds: z.number().int().min(1).max(600).default(300).describe('How long to wait for the run to finish, in seconds. The run keeps executing if this elapses.'),
+})
+export const EvalRegradeSchema = z.object({
+  runId: runId.describe('ID of the finished run whose answers should be graded again.'),
+  judge: evalJudge.optional().describe('New judge. Omit to keep the original run\'s judge.'),
+  checks: z.array(evalCheck).max(30).optional().describe('New deterministic checks. Omit to keep the original run\'s checks.'),
+  idempotencyKey: idempotencyKey.describe('Caller-generated submission ID. Reuse it after an uncertain response to recover the same re-grade run.'),
+}).superRefine((value, ctx) => {
+  if (value.judge === undefined && value.checks === undefined) issue(ctx, ['judge'], 'Provide a judge, checks, or both.')
+  if (value.checks) requireUnique(ctx, ['checks'], value.checks.map(item => item.id))
+  if (value.judge) requireUnique(ctx, ['judge', 'criteria'], value.judge.criteria.map(item => item.id))
+})
 export const EvalPreviewSchema = z.object({ suiteId, revision })
+export const EvalPreviewToolSchema = EvalPreviewSchema.extend({
+  includePlan: z.boolean().default(false).describe('Return the complete frozen plan, including every case and prompt. The default returns only what is needed to review and start the run.'),
+})
 export const EvalStartSchema = EvalPreviewSchema.extend({
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/, 'Use the complete 64-character lowercase hexadecimal preview fingerprint.').describe('Fingerprint from the reviewed preview for this suite revision.'),
-  idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, 'Use 1–128 letters, digits, dots, underscores, colons or hyphens.').describe('Caller-generated submission ID, such as a UUID. Reuse it with the same preview after an uncertain response. A new key can start new paid work.'),
+  idempotencyKey: idempotencyKey.describe('Caller-generated submission ID, such as a UUID. Reuse it with the same preview after an uncertain response. A new key can start new paid work.'),
 })
 export const EvalListSchema = z.object(pageFields)
 export const EvalResultsSchema = z.object({
@@ -189,5 +215,5 @@ export const EvalTrialSchema = z.object({
 export const EvalExportSchema = z.object({
   runId,
   format: z.enum(['json', 'csv']).default('json').describe('JSON includes full evidence. CSV contains summary rows.'),
-  maxBytes: z.number().int().min(1024).max(8 * 1024 * 1024).default(1024 * 1024).describe('Maximum number of export bytes the MCP server reads.'),
+  maxBytes: z.number().int().min(1024).max(8 * 1024 * 1024).default(1024 * 1024).describe('Maximum size of the export in bytes, both as read from the API and as returned by this tool.'),
 })
