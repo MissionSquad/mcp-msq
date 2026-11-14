@@ -47,10 +47,23 @@ export function evalRunStatus(response: unknown): unknown {
   return (record(data?.record) ?? data)?.status
 }
 
+/**
+ * Arms. A run compares arms; before arms existed each model was one arm, so a record without
+ * an arm id belongs to the arm named by its model id, and a target without a label is called
+ * by its model's name.
+ */
+function armOf(value: Json | undefined): unknown {
+  return value?.armId ?? value?.modelId
+}
+/** Arm id to the arm's display name, for every target of a plan. */
+function armNames(plan: Json | undefined): Map<unknown, unknown> {
+  return new Map(list(plan?.targets).map(item => { const source = record(item); return [armOf(source), source?.label ?? source?.name] }))
+}
+
 function target(value: unknown): Json | undefined {
   const source = record(value)
   if (!source) return undefined
-  return { ...pick(source, ['modelId', 'name', 'providerKey', 'model', 'settings']), priced: source.pricing != null }
+  return { ...pick(source, ['armId', 'label', 'modelId', 'name', 'providerKey', 'model', 'responseMode', 'settings']), priced: source.pricing != null }
 }
 
 /** What an agent needs to review a preview and start it: identity, size, models and warnings. */
@@ -89,10 +102,11 @@ function summaryRow(value: unknown, names: Map<unknown, unknown>): Json | undefi
   if (!row) return undefined
   const stat = (key: string, fields: string[]) => pick(record(row[key]), fields)
   return {
-    ...pick(row, ['variantId', 'modelId', 'stage', 'round', 'trials', 'completed', 'graded', 'passed', 'passRate', 'judgeCalls',
+    ...pick(row, ['variantId', 'armId', 'modelId', 'stage', 'round', 'trials', 'completed', 'graded', 'passed', 'passRate', 'judgeCalls',
       'requestSuccessRate', 'costPerPassUsd', 'failedTrials', 'failureReasons',
       'targetCostUsd', 'judgeCostUsd', 'totalCostUsd', 'costPerPassIncludingJudgeUsd', 'unpricedCalls']),
-    ...(names.has(row.modelId) ? { model: names.get(row.modelId) } : {}),
+    // `model` is the arm's name: its label, or its model's name when it has none.
+    ...(names.has(armOf(row)) ? { model: names.get(armOf(row)) } : {}),
     judgeScore: stat('judgeScore', ['count', 'mean', 'median', 'standardDeviation']),
     firstOutputMs: stat('firstOutputMs', ['median']),
     durationMs: stat('durationMs', ['median', 'p90']),
@@ -114,13 +128,13 @@ export function compactEvalRun(response: unknown): unknown {
   if (!report || !run) return response
   const plan = record(run.plan)
   const definition = record(plan?.definition)
-  const names = new Map(list(plan?.targets).map(item => [record(item)?.modelId, record(item)?.name]))
+  const names = armNames(plan)
   const startedAt = numberOrUndefined(run.startedAt)
   const completedAt = numberOrUndefined(run.completedAt)
   const overview = record(report.overview)
   const skipped = list(report.variants).map(record)
     .filter((variant): variant is Json => typeof variant?.skippedReason === 'string')
-    .map(variant => pick(variant, ['id', 'modelId', 'round', 'skippedReason']))
+    .map(variant => ({ ...pick(variant, ['id', 'armId', 'modelId', 'round', 'skippedReason']), ...(names.has(armOf(variant)) ? { model: names.get(armOf(variant)) } : {}) }))
   return {
     success: true,
     data: {
@@ -169,10 +183,10 @@ export function evalSummaryView(response: unknown, lowest: Map<string, unknown> 
   const run = record(report?.record)
   if (!compact || !report || !run) return response
   const plan = record(run.plan)
-  const names = new Map(list(plan?.targets).map(item => [record(item)?.modelId, record(item)?.name]))
+  const names = armNames(plan)
   const caseNames = new Map(list(record(plan?.definition)?.cases).map(item => [record(item)?.id, record(item)?.name]))
   const ranking = list(report.ranking).map(record).filter((item): item is Json => item !== undefined)
-    .map((item, index) => ({ rank: index + 1, model: names.get(item.modelId) ?? item.modelId, ...pick(item, ['variantId', 'modelId', 'value', 'withinNoise']) }))
+    .map((item, index) => ({ rank: index + 1, model: names.get(armOf(item)) ?? armOf(item), ...pick(item, ['variantId', 'armId', 'modelId', 'value', 'withinNoise']) }))
   const lowestScored = list(compact.summary).map(record).filter((row): row is Json => row !== undefined && lowest.has(String(row.variantId)))
     .map(row => ({ variantId: row.variantId, model: row.model ?? row.modelId,
       answers: list(payload(lowest.get(String(row.variantId)))?.data ?? record(lowest.get(String(row.variantId)))?.data)
@@ -192,13 +206,13 @@ export function evalOutputsView(response: unknown, plan: unknown): unknown {
   const envelope = record(response)
   if (!envelope) return response
   const caseNames = new Map(list(record(record(plan)?.definition)?.cases).map(item => [record(item)?.id, record(item)?.name]))
-  const names = new Map(list(record(plan)?.targets).map(item => [record(item)?.modelId, record(item)?.name]))
+  const names = armNames(record(plan))
   return {
     success: true, total: envelope.total,
     data: list(envelope.data).map(item => {
       const trial = record(item)
       const answer = gradedAnswer(item, caseNames)
-      return trial && answer ? { ...pick(trial, ['variantId', 'modelId', 'stage', 'round']), model: names.get(trial.modelId) ?? trial.modelId, ...answer } : undefined
+      return trial && answer ? { ...pick(trial, ['variantId', 'armId', 'modelId', 'stage', 'round']), model: names.get(armOf(trial)) ?? armOf(trial), ...answer } : undefined
     }).filter(Boolean),
   }
 }
@@ -209,8 +223,10 @@ function caseStats(trials: unknown[]): Map<string, CaseStat> {
   const stats = new Map<string, CaseStat>()
   for (const item of trials) {
     const trial = record(item)
-    if (!trial || typeof trial.caseId !== 'string' || typeof trial.modelId !== 'string') continue
-    const key = JSON.stringify([trial.modelId, trial.caseId])
+    const arm = armOf(trial)
+    if (!trial || typeof trial.caseId !== 'string' || typeof arm !== 'string') continue
+    // By arm, so two arms on one model are compared separately.
+    const key = JSON.stringify([arm, trial.caseId])
     const stat = stats.get(key) ?? { trials: 0, graded: 0, passed: 0, scored: 0, scoreSum: 0 }
     const grade = record(trial.grade)
     stat.trials++
@@ -223,7 +239,8 @@ function caseStats(trials: unknown[]): Map<string, CaseStat> {
 }
 
 /**
- * Case by case, how run B differs from run A for each model both runs used. Only the first-stage
+ * Case by case, how run B differs from run A for each arm both runs have, matched by arm id (for a
+ * run from before arms, the model id). Only the first-stage
  * (baseline) answers are compared. Cases or models present in one run only are listed, not compared.
  */
 export function compareEvalRunsView(a: { report: unknown; trials: unknown[] }, b: { report: unknown; trials: unknown[] }): unknown {
@@ -231,7 +248,7 @@ export function compareEvalRunsView(a: { report: unknown; trials: unknown[] }, b
     const run = record(payload(response)?.record)
     const plan = record(run?.plan)
     return { run, cases: new Map(list(record(plan?.definition)?.cases).map(item => [String(record(item)?.id), record(item)?.name])),
-      models: new Map(list(plan?.targets).map(item => [String(record(item)?.modelId), record(item)?.name])) }
+      models: new Map([...armNames(plan)].map(([arm, name]) => [String(arm), name])) }
   }
   const left = describe(a.report), right = describe(b.report)
   const statsA = caseStats(a.trials), statsB = caseStats(b.trials)
@@ -242,7 +259,8 @@ export function compareEvalRunsView(a: { report: unknown; trials: unknown[] }, b
     const parsed: unknown = JSON.parse(key)
     const [modelId, caseId] = Array.isArray(parsed) ? parsed.map(String) : ['', '']
     const from = statsA.get(key), to = statsB.get(key)
-    return { modelId, model: left.models.get(modelId) ?? modelId, caseId, case: left.cases.get(caseId) ?? caseId,
+    // `modelId` is kept as the row's key for existing readers; it holds the arm id.
+    return { armId: modelId, modelId, model: left.models.get(modelId) ?? modelId, caseId, case: left.cases.get(caseId) ?? caseId,
       passRateA: rate(from), passRateB: rate(to), passRateDelta: delta(rate(from), rate(to)),
       judgeScoreA: mean(from), judgeScoreB: mean(to), judgeScoreDelta: delta(mean(from), mean(to)) }
   })
@@ -256,7 +274,7 @@ export function compareEvalRunsView(a: { report: unknown; trials: unknown[] }, b
       note: 'Deltas are run B minus run A. A positive pass-rate or judge-score delta means run B did better on that case. Averages are over cases, not weighted by repetitions.',
       models: modelIds.map(modelId => {
         const mine = rows.filter(row => row.modelId === modelId)
-        return { modelId, model: left.models.get(modelId) ?? modelId, casesCompared: mine.length,
+        return { armId: modelId, modelId, model: left.models.get(modelId) ?? modelId, casesCompared: mine.length,
           meanPassRateDelta: average(mine.map(row => row.passRateDelta)), meanJudgeScoreDelta: average(mine.map(row => row.judgeScoreDelta)),
           improvedCases: mine.filter(row => (row.judgeScoreDelta ?? row.passRateDelta ?? 0) > 0).length,
           worseCases: mine.filter(row => (row.judgeScoreDelta ?? row.passRateDelta ?? 0) < 0).length }

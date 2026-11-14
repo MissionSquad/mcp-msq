@@ -139,6 +139,31 @@ Use `msq_list_evals` and `msq_list_eval_runs` with `limit`/`offset` to find save
 
 Compare like stages and variants on pass rate, latency, throughput, tokens and cost. Target cost excludes judge and optimizer overhead; the report's spend separates all three roles. Unknown measurements are not zero. A small sample or repeated calls on the same inputs does not establish generalization.
 
+## Compare prompts or settings with arms
+
+`models` compares different models that all share the eval's system prompt. To compare anything else, use `arms` instead. An arm is one configuration under test: a model with, optionally, its own label, settings, system prompt and response mode. The same model may be in several arms. Every arm answers every case, and results have one row per arm.
+
+```js
+await callTool('msq_create_eval', {
+  name: 'Brief or full prompt',
+  systemPrompt: 'Summarise the message.',
+  cases: [{ id: 'refund', name: 'Refund request', input: 'I was charged twice and want one payment back.' }],
+  arms: [
+    { id: 'brief', label: 'Brief prompt', modelId: MODEL_ID, systemPrompt: 'Summarise the message in one sentence.' },
+    { id: 'full', label: 'Full prompt', modelId: MODEL_ID },
+    { id: 'cold', label: 'Full prompt, temperature 0', modelId: MODEL_ID, overrides: { temperature: 0 } },
+  ],
+  checks: [{ id: 'short', type: 'wordCount', max: 40, required: true }],
+});
+```
+
+- Give either `arms` or `models`, never both. At most 10 arms.
+- Arm ids must be unique, and so must the labels you give (ignoring case). A label left out is filled in with the model's name, numbered if it is taken.
+- `systemPrompt`, `responseMode` and `responseSchema` on an arm replace the eval's for that arm only. `overrides` apply after `sharedSettings`.
+- Results name the arm in `armId` and its display name in `model`. `msq_list_eval_results` and `msq_get_eval_outputs` take an `armId` filter.
+- A run from before arms has one arm per model: its `armId` is the model id.
+- `msq_compare_eval_runs` matches the two runs' arms by arm id, so give the arms the same ids in both evals.
+
 ## JSON extraction with portable checks
 
 A separate definition can test extracting a delivery date and order total. This schema validates structure and types; JSON Pointer checks are fixed across all cases, so only assert a common property there. Use additional cases and inspect trial outputs to assess each extracted value.

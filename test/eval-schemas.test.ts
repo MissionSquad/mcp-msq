@@ -153,6 +153,23 @@ describe('eval MCP schemas', () => {
     expect(EvalDefinitionSchema.parse({ ...baseline, checks }).checks).toEqual(checks)
   })
 
+  it('accepts arms or models, never both, and lets arms repeat a model', () => {
+    const { models, ...rest } = baseline
+    const arm = (id: string, extra: Record<string, unknown> = {}) => ({ id, modelId: 'saved-target', ...extra })
+    const parsed = EvalDefinitionSchema.parse({ ...rest, arms: [arm('brief', { label: 'Brief', systemPrompt: 'Be brief.' }), arm('json', { responseMode: 'json' })] })
+    expect(parsed.arms?.map(item => [item.id, item.modelId, item.overrides])).toEqual([['brief', 'saved-target', {}], ['json', 'saved-target', {}]])
+    expect(parsed.models).toBeUndefined()
+    expect(EvalDefinitionSchema.safeParse({ ...rest, models }).success).toBe(true)
+    for (const invalid of [
+      { ...rest, models, arms: [arm('a')] }, rest,
+      { ...rest, arms: [arm('a'), arm('a')] },
+      { ...rest, arms: [arm('a', { label: 'Same' }), arm('b', { label: ' same ' })] },
+      { ...rest, arms: [arm('a', { responseMode: 'schema' })] },
+      { ...rest, arms: Array.from({ length: 11 }, (_, index) => arm(`arm-${index}`)) },
+    ]) expect(EvalDefinitionSchema.safeParse(invalid).success).toBe(false)
+    expect(EvalDefinitionSchema.safeParse({ ...rest, arms: [arm('a', { responseMode: 'schema', responseSchema: { type: 'object' } })] }).success).toBe(true)
+  })
+
   it('requires exact preview identity and a caller-supplied submission key', () => {
     const preview = { suiteId: 'suite-1', revision: 1, fingerprint: 'a'.repeat(64) }
     expect(EvalStartSchema.parse({ ...preview, idempotencyKey: 'run:request.1' })).toEqual({

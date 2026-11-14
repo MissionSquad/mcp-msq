@@ -41,6 +41,17 @@ const selection = z.object({
   overrides: settingOverrides.default({}).describe('Omit a setting to inherit its effective value. Null clears the inherited value, except maxTokens then uses the eval default of 4096. Use settings supported by this model.'),
 }).strict()
 
+const responseModeChoice = z.enum(['text', 'json', 'schema'])
+const arm = z.object({
+  id: id.describe('Unique arm ID within this eval, such as brief-prompt.'),
+  label: text(160).optional().describe('Name shown for this arm in results. Unique within the eval, ignoring case. Left out, the model\'s name is used.'),
+  modelId: id.describe('Configured MissionSquad model ID from the eval options tool. The same model may be used by several arms.'),
+  overrides: settingOverrides.default({}).describe('Settings for this arm only, applied after sharedSettings. Omit a setting to inherit it; null clears the inherited value.'),
+  systemPrompt: text(32_768, 0).optional().describe('System prompt for this arm only. Left out, the eval\'s systemPrompt is used.'),
+  responseMode: responseModeChoice.optional().describe('Response mode for this arm only. Left out, the eval\'s responseMode is used.'),
+  responseSchema: jsonSchema.optional().describe('Schema for this arm when its responseMode is schema. Left out, the eval\'s responseSchema is used.'),
+}).strict()
+
 const evalCase = z.object({
   id: id.describe('Unique stable case ID, such as readiness-ok.'),
   name: text(160).describe('Case label shown in eval results.'),
@@ -138,7 +149,8 @@ export const EvalDefinitionSchema = z.object({
   mode: z.enum(['compare', 'improve']).default('compare').describe('Compare runs the same cases on selected models. Improve searches prompt or setting changes and measures held-out cases.'),
   systemPrompt: text(32_768, 0).describe('System message sent to every target. Use an empty string for no instructions.'),
   cases: z.array(evalCase).min(1).max(200).describe('Prompts and optional reference answers used to exercise the models.'),
-  models: z.array(selection).min(1).max(10).describe('Target models to compare or improve. Choose configured model IDs from eval options.'),
+  arms: z.array(arm).min(1).max(10).optional().describe('What to compare: 1 to 10 arms. An arm is a model with, optionally, its own settings, system prompt and response mode; every arm answers every case and gets its own row in the results. Use two arms on the same model to compare two prompts or two settings. Give either arms or models, never both.'),
+  models: z.array(selection).min(1).max(10).optional().describe('The simpler way to say what to compare when every target is a different model sharing the eval\'s system prompt: one entry per model. Give either models or arms, never both.'),
   sharedSettings: settingOverrides.default({}).describe('Settings applied to every target after its saved settings and before per-model overrides. Omit a key to retain the saved setting. Null clears it, with maxTokens falling back to 4096. Judge and optimizer settings are configured separately.'),
   responseMode: z.enum(['text', 'json', 'schema']).default('text').describe('Native provider response format. Text mode with JSON or schema checks works across more providers.'),
   responseSchema: jsonSchema.optional(),
@@ -153,11 +165,21 @@ export const EvalDefinitionSchema = z.object({
   spendLimitUsd: z.number().finite().gt(0).optional().describe('Optional spend cap in USD. Requires known prices for every selected role.'),
   seed: seed.default(42).describe('Seed for eval case splitting and comparisons. Model sampling seeds belong in settings.'),
 }).strict().superRefine((definition, ctx) => {
-  const { cases, checks, judge, mode, models, primaryMetric, responseMode, responseSchema, search } = definition
+  const { arms, cases, checks, judge, mode, models, primaryMetric, responseMode, responseSchema, search } = definition
   requireUnique(ctx, ['cases'], cases.map(item => item.id))
   requireUnique(ctx, ['checks'], checks.map(item => item.id))
   requireUsableChecks(ctx, checks)
-  requireUnique(ctx, ['models'], models.map(item => item.modelId))
+  if ((arms === undefined) === (models === undefined)) issue(ctx, [arms === undefined ? 'models' : 'arms'], 'Give either arms or models, not both.')
+  // One model per entry in models. Arms may repeat a model; their ids and the labels given must differ.
+  if (models) requireUnique(ctx, ['models'], models.map(item => item.modelId))
+  if (arms) {
+    requireUnique(ctx, ['arms'], arms.map(item => item.id))
+    const labels = arms.flatMap(item => item.label === undefined ? [] : [item.label.trim().toLowerCase()])
+    if (new Set(labels).size !== labels.length) issue(ctx, ['arms'], 'Arm labels must differ, ignoring case.')
+    arms.forEach((item, index) => {
+      if (item.responseMode === 'schema' && !item.responseSchema && !responseSchema) issue(ctx, ['arms', index, 'responseSchema'], 'Schema response mode requires a response schema on the arm or the eval.')
+    })
+  }
   if (judge) requireUnique(ctx, ['judge', 'criteria'], judge.criteria.map(item => item.id))
 
   if (checks.some(check => check.type === 'exact')) {
@@ -238,6 +260,7 @@ export const EvalListSchema = z.object(pageFields)
 export const EvalResultsSchema = z.object({
   runId,
   ...pageFields,
+  armId: id.optional().describe('Only return trials of this arm. For a run from before arms, an arm ID is its model ID.'),
   modelId: id.optional().describe('Only return trials run by this configured model.'),
   caseId: id.optional().describe('Only return trials associated with this case ID.'),
   role: z.enum(['target', 'judge', 'optimizer']).optional(),
@@ -254,6 +277,7 @@ export const EvalOutputsSchema = z.object({
   runId,
   limit: z.number().int().min(1).max(50).default(10).describe('Maximum number of answers in this page.'),
   offset: pageFields.offset,
+  armId: id.optional().describe('Only answers from this arm. For a run from before arms, an arm ID is its model ID.'),
   modelId: id.optional().describe('Only answers from this configured model.'),
   variantId: id.optional().describe('Only answers of this variant.'),
   caseId: id.optional().describe('Only answers to this case.'),
