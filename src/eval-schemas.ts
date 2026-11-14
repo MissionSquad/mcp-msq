@@ -41,6 +41,18 @@ const selection = z.object({
   overrides: settingOverrides.default({}).describe('Omit a setting to inherit its effective value. Null clears the inherited value, except maxTokens then uses the eval default of 4096. Use settings supported by this model.'),
 }).strict()
 
+const responseModeChoice = z.enum(['text', 'json', 'schema'])
+const arm = z.object({
+  id: id.describe('Unique arm ID within this eval, such as brief-prompt.'),
+  label: text(160).optional().describe('Name shown for this arm in results. Unique within the eval, ignoring case. Left out, the model\'s name is used.'),
+  modelId: id.optional().describe('Configured MissionSquad model ID from the eval options tool. The same model may be used by several arms. Give either modelId or agentId, never both.'),
+  agentId: id.optional().describe('ID of a saved agent from data.agents in the eval options tool. The arm sends the agent\'s system prompt to the agent\'s model with the agent\'s settings as one request, without the agent\'s tools, knowledge base or workflow; sharedSettings and the eval\'s systemPrompt are not applied to it. Give either agentId or modelId, never both.'),
+  overrides: settingOverrides.default({}).describe('Settings for this arm only, applied after sharedSettings. Omit a setting to inherit it; null clears the inherited value.'),
+  systemPrompt: text(32_768, 0).optional().describe('System prompt for this arm only. Left out, the eval\'s systemPrompt is used.'),
+  responseMode: responseModeChoice.optional().describe('Response mode for this arm only. Left out, the eval\'s responseMode is used.'),
+  responseSchema: jsonSchema.optional().describe('Schema for this arm when its responseMode is schema. Left out, the eval\'s responseSchema is used.'),
+}).strict()
+
 const evalCase = z.object({
   id: id.describe('Unique stable case ID, such as readiness-ok.'),
   name: text(160).describe('Case label shown in eval results.'),
@@ -54,11 +66,26 @@ const checkFields = {
   id: id.describe('Unique check ID.'),
   required: z.boolean().describe('Whether this check must pass for the answer to pass.'),
 }
+const caseInsensitive = z.boolean().optional().describe('Compare both sides in lower case.')
+const allowCodeFence = z.boolean().optional().describe('Read the JSON from inside an answer that is exactly one Markdown code block. Off by default: the answer is parsed as written.')
+const phrases = z.array(text(8192)).min(1).max(20).describe('1 to 20 phrases.')
+const bound = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional()
 const evalCheck = z.discriminatedUnion('type', [
-  z.object({ ...checkFields, type: z.literal('exact'), trim: z.boolean() }).strict(),
-  z.object({ ...checkFields, type: z.literal('contains'), text: text(8192) }).strict(),
-  z.object({ ...checkFields, type: z.literal('json') }).strict(),
-  z.object({ ...checkFields, type: z.literal('schema'), schema: jsonSchema }).strict(),
+  z.object({ ...checkFields, type: z.literal('exact'), trim: z.boolean(), caseInsensitive }).strict(),
+  z.object({ ...checkFields, type: z.literal('contains'), text: text(8192), caseInsensitive }).strict(),
+  z.object({ ...checkFields, type: z.literal('notContains'), phrases, caseInsensitive }).strict().describe('Passes when none of the phrases appears in the answer.'),
+  z.object({ ...checkFields, type: z.literal('containsAny'), phrases, caseInsensitive }).strict().describe('Passes when at least one phrase appears in the answer.'),
+  z.object({ ...checkFields, type: z.literal('containsAll'), phrases, caseInsensitive }).strict().describe('Passes when every phrase appears in the answer.'),
+  z.object({
+    ...checkFields, type: z.literal('regex'),
+    pattern: text(1024).describe('A JavaScript regular expression. Passes when it matches somewhere in the answer.'),
+    flags: z.string().max(4).regex(/^[imsu]*$/).optional().describe('Any of i, m, s and u, each once.'),
+  }).strict(),
+  z.object({ ...checkFields, type: z.literal('wordCount'), min: bound, max: bound }).strict().describe('Passes when the number of whitespace-separated words is within min and max. Give at least one of them.'),
+  z.object({ ...checkFields, type: z.literal('sentenceCount'), min: bound, max: bound }).strict().describe('Passes when the number of sentences is within min and max. Give at least one of them.'),
+  z.object({ ...checkFields, type: z.literal('maxChars'), max: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER) }).strict().describe('Passes when the answer has at most max characters.'),
+  z.object({ ...checkFields, type: z.literal('json'), allowCodeFence }).strict(),
+  z.object({ ...checkFields, type: z.literal('schema'), schema: jsonSchema, allowCodeFence }).strict(),
   z.object({
     ...checkFields,
     type: z.literal('jsonValue'),
@@ -69,6 +96,7 @@ const evalCheck = z.discriminatedUnion('type', [
     expected: z.unknown().refine(value => value !== undefined, {
       message: 'A JSON value check requires an expected value.',
     }).describe('Exact JSON value at the pointer, with its original type.'),
+    allowCodeFence,
   }).strict(),
 ])
 
@@ -101,13 +129,29 @@ function requireUnique(ctx: z.RefinementCtx, path: string[], ids: string[]) {
   if (new Set(ids).size !== ids.length) issue(ctx, path, 'IDs must be unique.')
 }
 
+/** Rules a single check must meet that span more than one of its fields. */
+function requireUsableChecks(ctx: z.RefinementCtx, checks: Array<z.infer<typeof evalCheck>>) {
+  checks.forEach((check, index) => {
+    if (check.type === 'wordCount' || check.type === 'sentenceCount') {
+      if (check.min === undefined && check.max === undefined) issue(ctx, ['checks', index], 'Give a minimum, a maximum, or both.')
+      else if (check.min !== undefined && check.max !== undefined && check.min > check.max) issue(ctx, ['checks', index, 'min'], 'The minimum is above the maximum.')
+    }
+    if (check.type === 'regex') {
+      const flags = check.flags ?? ''
+      if (new Set(flags).size !== flags.length) issue(ctx, ['checks', index, 'flags'], 'Use each flag once.')
+      try { new RegExp(check.pattern, flags) } catch { issue(ctx, ['checks', index, 'pattern'], 'This is not a valid regular expression.') }
+    }
+  })
+}
+
 export const EvalDefinitionSchema = z.object({
   name: text(160).describe('Suite label shown in the eval list and run history.'),
   description: text(2000, 0).optional().describe('What this eval is for, in a sentence or two. Shown in run headers, PDF reports and report emails.'),
   mode: z.enum(['compare', 'improve']).default('compare').describe('Compare runs the same cases on selected models. Improve searches prompt or setting changes and measures held-out cases.'),
   systemPrompt: text(32_768, 0).describe('System message sent to every target. Use an empty string for no instructions.'),
   cases: z.array(evalCase).min(1).max(200).describe('Prompts and optional reference answers used to exercise the models.'),
-  models: z.array(selection).min(1).max(10).describe('Target models to compare or improve. Choose configured model IDs from eval options.'),
+  arms: z.array(arm).min(1).max(10).optional().describe('What to compare: 1 to 10 arms. An arm is a model with, optionally, its own settings, system prompt and response mode; every arm answers every case and gets its own row in the results. Use two arms on the same model to compare two prompts or two settings. Give either arms or models, never both.'),
+  models: z.array(selection).min(1).max(10).optional().describe('The simpler way to say what to compare when every target is a different model sharing the eval\'s system prompt: one entry per model. Give either models or arms, never both.'),
   sharedSettings: settingOverrides.default({}).describe('Settings applied to every target after its saved settings and before per-model overrides. Omit a key to retain the saved setting. Null clears it, with maxTokens falling back to 4096. Judge and optimizer settings are configured separately.'),
   responseMode: z.enum(['text', 'json', 'schema']).default('text').describe('Native provider response format. Text mode with JSON or schema checks works across more providers.'),
   responseSchema: jsonSchema.optional(),
@@ -122,10 +166,22 @@ export const EvalDefinitionSchema = z.object({
   spendLimitUsd: z.number().finite().gt(0).optional().describe('Optional spend cap in USD. Requires known prices for every selected role.'),
   seed: seed.default(42).describe('Seed for eval case splitting and comparisons. Model sampling seeds belong in settings.'),
 }).strict().superRefine((definition, ctx) => {
-  const { cases, checks, judge, mode, models, primaryMetric, responseMode, responseSchema, search } = definition
+  const { arms, cases, checks, judge, mode, models, primaryMetric, responseMode, responseSchema, search } = definition
   requireUnique(ctx, ['cases'], cases.map(item => item.id))
   requireUnique(ctx, ['checks'], checks.map(item => item.id))
-  requireUnique(ctx, ['models'], models.map(item => item.modelId))
+  requireUsableChecks(ctx, checks)
+  if ((arms === undefined) === (models === undefined)) issue(ctx, [arms === undefined ? 'models' : 'arms'], 'Give either arms or models, not both.')
+  // One model per entry in models. Arms may repeat a model; their ids and the labels given must differ.
+  if (models) requireUnique(ctx, ['models'], models.map(item => item.modelId))
+  if (arms) {
+    requireUnique(ctx, ['arms'], arms.map(item => item.id))
+    const labels = arms.flatMap(item => item.label === undefined ? [] : [item.label.trim().toLowerCase()])
+    if (new Set(labels).size !== labels.length) issue(ctx, ['arms'], 'Arm labels must differ, ignoring case.')
+    arms.forEach((item, index) => {
+      if ((item.modelId === undefined) === (item.agentId === undefined)) issue(ctx, ['arms', index], 'Give the arm either a modelId or an agentId, not both.')
+      if (item.responseMode === 'schema' && !item.responseSchema && !responseSchema) issue(ctx, ['arms', index, 'responseSchema'], 'Schema response mode requires a response schema on the arm or the eval.')
+    })
+  }
   if (judge) requireUnique(ctx, ['judge', 'criteria'], judge.criteria.map(item => item.id))
 
   if (checks.some(check => check.type === 'exact')) {
@@ -173,6 +229,10 @@ export const EvalUpdateSchema = z.object({
   definition: EvalDefinitionSchema.describe('Complete replacement definition. Get the suite and its current revision before editing.'),
 })
 export const EvalSuiteIdSchema = z.object({ suiteId })
+export const EvalCloneSchema = z.object({
+  suiteId: suiteId.describe('ID of the saved eval to copy.'),
+  name: text(160).optional().describe('Name for the copy. Left out, the copy is named after the original with " (copy)" added.'),
+})
 export const EvalRunIdSchema = z.object({ runId })
 const idempotencyKey = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, 'Use 1–128 letters, digits, dots, underscores, colons or hyphens.')
 export const EvalRunViewSchema = z.object({
@@ -190,8 +250,12 @@ export const EvalRegradeSchema = z.object({
   idempotencyKey: idempotencyKey.describe('Caller-generated submission ID. Reuse it after an uncertain response to recover the same re-grade run.'),
 }).superRefine((value, ctx) => {
   if (value.judge === undefined && value.checks === undefined) issue(ctx, ['judge'], 'Provide a judge, checks, or both.')
-  if (value.checks) requireUnique(ctx, ['checks'], value.checks.map(item => item.id))
+  if (value.checks) { requireUnique(ctx, ['checks'], value.checks.map(item => item.id)); requireUsableChecks(ctx, value.checks) }
   if (value.judge) requireUnique(ctx, ['judge', 'criteria'], value.judge.criteria.map(item => item.id))
+})
+export const EvalRerunSchema = z.object({
+  runId: runId.describe('ID of the finished Compare run whose failed requests should be sent again.'),
+  idempotencyKey: idempotencyKey.describe('Caller-generated submission ID. Reuse it after an uncertain response to recover the same re-run.'),
 })
 export const EvalPreviewSchema = z.object({ suiteId, revision })
 export const EvalPreviewToolSchema = EvalPreviewSchema.extend({
@@ -206,6 +270,7 @@ export const EvalListSchema = z.object(pageFields)
 export const EvalResultsSchema = z.object({
   runId,
   ...pageFields,
+  armId: id.optional().describe('Only return trials of this arm. For a run from before arms, an arm ID is its model ID.'),
   modelId: id.optional().describe('Only return trials run by this configured model.'),
   caseId: id.optional().describe('Only return trials associated with this case ID.'),
   role: z.enum(['target', 'judge', 'optimizer']).optional(),
@@ -222,6 +287,7 @@ export const EvalOutputsSchema = z.object({
   runId,
   limit: z.number().int().min(1).max(50).default(10).describe('Maximum number of answers in this page.'),
   offset: pageFields.offset,
+  armId: id.optional().describe('Only answers from this arm. For a run from before arms, an arm ID is its model ID.'),
   modelId: id.optional().describe('Only answers from this configured model.'),
   variantId: id.optional().describe('Only answers of this variant.'),
   caseId: id.optional().describe('Only answers to this case.'),

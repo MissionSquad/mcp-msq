@@ -84,7 +84,7 @@ const started = await callTool('msq_start_eval_run', submission);
 const runId = started.data.id;
 ```
 
-If the start response times out or is lost, retry the **identical** submission with the same key; generating a new key can incur another run. A stale-plan 409 requires a new preview and review before a new submission. A 410 means the old submission was deleted and cannot be replayed. Only one run can be active per account, re-grades included.
+If the start response times out or is lost, retry the **identical** submission with the same key; generating a new key can incur another run. A stale-plan 409 requires a new preview and review before a new submission. A 410 means the old submission was deleted and cannot be replayed. Starting never fails because another run is active. Each account runs one eval at a time; further runs, re-grades and resumed runs wait as `queued` in the order they joined the queue, and a waiting run reports `queuePosition` (1 means it starts next). An account may have a limited number of runs waiting (`limits.queuedRuns` in `msq_get_eval_options`, 10 by default); a start beyond that gets a 409.
 
 A request that fails does not end the run. It is kept as a failed trial with its reason, and the other requests carry on. A model that fails three requests in a row is skipped, and the remaining models finish. A run stops early only for its time, call or spend limit, a cancellation, or when every model has been skipped. Each model request has a 120-second timeout and is not retried.
 
@@ -96,7 +96,7 @@ let report = await callTool('msq_wait_eval_run', { runId, timeoutSeconds: 600 })
 while (report.timedOut) report = await callTool('msq_wait_eval_run', { runId, timeoutSeconds: 600 });
 // The compact view has status, progress, timing, spend and one summary row per model.
 console.log(report.data.status, report.data.timing, report.data.spend, report.data.summary);
-// completed, cancelled, interrupted, paused, and error are terminal; paused cannot resume.
+// completed, cancelled, interrupted, paused, and error are terminal; continue a paused run with msq_resume_eval_run or close it with msq_finish_eval_run.
 // Each summary row reports failedTrials and failureReasons; report.data.skipped lists dropped models.
 // For the frozen plan and every prompt: callTool('msq_get_eval_run', { runId, view: 'full' }).
 
@@ -138,6 +138,46 @@ Use `msq_list_evals` and `msq_list_eval_runs` with `limit`/`offset` to find save
 `msq_cancel_eval_run` stops new work and attempts to abort active calls; poll until terminal. Incurred usage and partial results remain. Export what you need before `msq_delete_eval_run`, which permanently deletes a terminal run and its detail, while accounting remains. `msq_delete_eval` removes the saved definition but retains historical run snapshots; it does not cancel a run. Deleted submission keys cannot recreate their runs.
 
 Compare like stages and variants on pass rate, latency, throughput, tokens and cost. Target cost excludes judge and optimizer overhead; the report's spend separates all three roles. Unknown measurements are not zero. A small sample or repeated calls on the same inputs does not establish generalization.
+
+## Compare prompts or settings with arms
+
+`models` compares different models that all share the eval's system prompt. To compare anything else, use `arms` instead. An arm is one configuration under test: a model with, optionally, its own label, settings, system prompt and response mode. The same model may be in several arms. Every arm answers every case, and results have one row per arm.
+
+```js
+await callTool('msq_create_eval', {
+  name: 'Brief or full prompt',
+  systemPrompt: 'Summarise the message.',
+  cases: [{ id: 'refund', name: 'Refund request', input: 'I was charged twice and want one payment back.' }],
+  arms: [
+    { id: 'brief', label: 'Brief prompt', modelId: MODEL_ID, systemPrompt: 'Summarise the message in one sentence.' },
+    { id: 'full', label: 'Full prompt', modelId: MODEL_ID },
+    { id: 'cold', label: 'Full prompt, temperature 0', modelId: MODEL_ID, overrides: { temperature: 0 } },
+  ],
+  checks: [{ id: 'short', type: 'wordCount', max: 40, required: true }],
+});
+```
+
+- Give either `arms` or `models`, never both. At most 10 arms.
+- Arm ids must be unique, and so must the labels you give (ignoring case). A label left out is filled in with the model's name, numbered if it is taken.
+- `systemPrompt`, `responseMode` and `responseSchema` on an arm replace the eval's for that arm only. `overrides` apply after `sharedSettings`.
+- Results name the arm in `armId` and its display name in `model`. `msq_list_eval_results` and `msq_get_eval_outputs` take an `armId` filter.
+- A run from before arms has one arm per model: its `armId` is the model id.
+- `msq_compare_eval_runs` matches the two runs' arms by arm id, so give the arms the same ids in both evals.
+
+An arm can also be a saved agent: `{ id: 'support', agentId: AGENT_ID }`, with `AGENT_ID` from `data.agents` in `msq_get_eval_options`. The arm sends the agent's system prompt to the agent's model with the agent's settings, as one request. The agent's tools, knowledge base and workflow do not run; `notReproduced` in the options, and warnings in the preview, say which of those the agent has. `sharedSettings` and the eval's `systemPrompt` are not applied to an agent arm; the arm's own `overrides` and `systemPrompt` are.
+
+## Copy an eval, or finish a run that had failures
+
+```js
+// A copy to change without touching the original. Nothing runs.
+const copy = await callTool('msq_clone_eval', { suiteId, name: 'Sentiment, shorter prompt' });
+
+// A finished Compare run where some requests failed: send only those again.
+const rerun = await callTool('msq_rerun_failed_eval_run', { runId, idempotencyKey: 'sentiment-rerun-01' });
+const finished = await callTool('msq_wait_eval_run', { runId: rerun.data.id });
+```
+
+`msq_rerun_failed_eval_run` creates a separate run linked to the original. It keeps the original's completed answers and grades and requests only what is missing: requests that failed or were cut off, and requests never sent because the run stopped or a model was skipped (a skipped model is tried again). Its spend covers only the requests it sends; its results cover the whole set. It returns a 409 when the run has not finished, is an Improve run or a re-grade, or has no failed requests.
 
 ## JSON extraction with portable checks
 

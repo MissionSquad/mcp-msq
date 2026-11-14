@@ -108,6 +108,14 @@ describe('eval MCP schemas', () => {
     ['missing exact answer', { checks: [{ id: 'exact', type: 'exact', required: true, trim: true }] }],
     ['missing expected JSON value', { checks: [{ id: 'value', type: 'jsonValue', required: true, pointer: '/status' }] }],
     ['invalid JSON Pointer', { checks: [{ id: 'value', type: 'jsonValue', required: true, pointer: '/~2', expected: true }] }],
+    ['a pattern that is not a regular expression', { checks: [{ id: 'p', type: 'regex', required: true, pattern: '(' }] }],
+    ['an unsupported pattern flag', { checks: [{ id: 'p', type: 'regex', required: true, pattern: 'x', flags: 'g' }] }],
+    ['a repeated pattern flag', { checks: [{ id: 'p', type: 'regex', required: true, pattern: 'x', flags: 'ii' }] }],
+    ['a count check with no bound', { checks: [{ id: 'w', type: 'wordCount', required: true }] }],
+    ['a count check with its bounds reversed', { checks: [{ id: 'w', type: 'sentenceCount', required: true, min: 3, max: 1 }] }],
+    ['an empty phrase list', { checks: [{ id: 'n', type: 'notContains', required: true, phrases: [] }] }],
+    ['too many phrases', { checks: [{ id: 'n', type: 'containsAny', required: true, phrases: Array(21).fill('x') }] }],
+    ['an option on a check that does not take it', { checks: [{ id: 'm', type: 'maxChars', required: true, max: 10, caseInsensitive: true }] }],
     ['search in compare mode', { search }],
     ['too few independent groups', { mode: 'improve', search }],
     ['nullable search candidates', {
@@ -128,6 +136,42 @@ describe('eval MCP schemas', () => {
     expect(parsed.sharedSettings).toEqual({ reasoningEffort: 'max' })
     expect(parsed.judge).toMatchObject({ includeSystemPrompt: false })
     expect(EvalDefinitionSchema.parse({ ...baseline, checks: [], judge, primaryMetric: 'judgeScore' }).judge).not.toHaveProperty('includeSystemPrompt')
+  })
+
+  it('accepts every check type with its options', () => {
+    const checks = [
+      { id: 'a', type: 'contains', required: true, text: 'ok', caseInsensitive: true },
+      { id: 'b', type: 'notContains', required: true, phrases: ['sorry'], caseInsensitive: true },
+      { id: 'c', type: 'containsAny', required: false, phrases: ['yes', 'no'] },
+      { id: 'd', type: 'containsAll', required: false, phrases: ['red', 'blue'] },
+      { id: 'e', type: 'regex', required: true, pattern: '^\\d{4}$', flags: 'im' },
+      { id: 'f', type: 'wordCount', required: true, max: 50 },
+      { id: 'g', type: 'sentenceCount', required: true, min: 1, max: 3 },
+      { id: 'h', type: 'maxChars', required: true, max: 280 },
+      { id: 'i', type: 'json', required: true, allowCodeFence: true },
+    ]
+    expect(EvalDefinitionSchema.parse({ ...baseline, checks }).checks).toEqual(checks)
+  })
+
+  it('accepts arms or models, never both, and lets arms repeat a model', () => {
+    const { models, ...rest } = baseline
+    const arm = (id: string, extra: Record<string, unknown> = {}) => ({ id, modelId: 'saved-target', ...extra })
+    const parsed = EvalDefinitionSchema.parse({ ...rest, arms: [arm('brief', { label: 'Brief', systemPrompt: 'Be brief.' }), arm('json', { responseMode: 'json' })] })
+    expect(parsed.arms?.map(item => [item.id, item.modelId, item.overrides])).toEqual([['brief', 'saved-target', {}], ['json', 'saved-target', {}]])
+    expect(parsed.models).toBeUndefined()
+    expect(EvalDefinitionSchema.safeParse({ ...rest, models }).success).toBe(true)
+    for (const invalid of [
+      { ...rest, models, arms: [arm('a')] }, rest,
+      { ...rest, arms: [arm('a'), arm('a')] },
+      { ...rest, arms: [arm('a', { label: 'Same' }), arm('b', { label: ' same ' })] },
+      { ...rest, arms: [arm('a', { responseMode: 'schema' })] },
+      { ...rest, arms: Array.from({ length: 11 }, (_, index) => arm(`arm-${index}`)) },
+    ]) expect(EvalDefinitionSchema.safeParse(invalid).success).toBe(false)
+    expect(EvalDefinitionSchema.safeParse({ ...rest, arms: [arm('a', { responseMode: 'schema', responseSchema: { type: 'object' } })] }).success).toBe(true)
+    // An arm names a model or an agent, never both or neither.
+    expect(EvalDefinitionSchema.parse({ ...rest, arms: [{ id: 'agent', agentId: 'saved-agent' }] }).arms?.[0]).toMatchObject({ agentId: 'saved-agent', overrides: {} })
+    expect(EvalDefinitionSchema.safeParse({ ...rest, arms: [{ id: 'both', agentId: 'saved-agent', modelId: 'saved-target' }] }).success).toBe(false)
+    expect(EvalDefinitionSchema.safeParse({ ...rest, arms: [{ id: 'neither' }] }).success).toBe(false)
   })
 
   it('requires exact preview identity and a caller-supplied submission key', () => {

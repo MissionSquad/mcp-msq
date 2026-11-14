@@ -183,7 +183,7 @@ describe('eval MCP tools', () => {
         durationMs: { median: 850, p90: 1200 }, inputTokens: { mean: 100 }, outputTokens: { mean: 40 }, costUsd: { count: 5, mean: 0.0016 },
         json: { checked: 0, passed: 0 }, schema: { checked: 0, passed: 0 },
       }],
-      skipped: [{ id: 'variant-a', modelId: 'model-a', round: 0, skippedReason: 'Skipped after 3 failed requests in a row.' }],
+      skipped: [{ id: 'variant-a', modelId: 'model-a', round: 0, skippedReason: 'Skipped after 3 failed requests in a row.', model: 'Model A' }],
       warnings: ['Judge: the judge runs at temperature 0 instead of its saved 0.7.'],
     } })
   })
@@ -222,9 +222,9 @@ describe('eval MCP tools', () => {
   it('re-grades a finished run with a new judge and returns the new run without its plan', async () => {
     const judge = { model: { modelId: 'configured-judge' }, rubric: 'Score the sentiment label.', passScore: 70,
       criteria: [{ id: 'label', description: 'The label is right.', weight: 1 }] }
-    fetchMock.mockResolvedValueOnce(response({ success: true, data: { id: 'run-2', status: 'queued', phase: 'grading', kind: 'regrade', parentRunId: 'run-1', plan: { definition: { systemPrompt: 'SECRET' } } } }))
+    fetchMock.mockResolvedValueOnce(response({ success: true, data: { id: 'run-2', status: 'queued', phase: 'grading', kind: 'regrade', parentRunId: 'run-1', queuePosition: 2, plan: { definition: { systemPrompt: 'SECRET' } } } }))
     expect(await call('msq_regrade_eval_run', { runId: 'run-1', judge, idempotencyKey: 'regrade-1' }))
-      .toEqual({ success: true, data: { id: 'run-2', status: 'queued', phase: 'grading', kind: 'regrade', parentRunId: 'run-1' } })
+      .toEqual({ success: true, data: { id: 'run-2', status: 'queued', phase: 'grading', kind: 'regrade', parentRunId: 'run-1', queuePosition: 2 } })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('https://api.missionsquad.invalid/v1/core/eval-runs/run-1/regrade')
     expect(init.method).toBe('POST')
@@ -257,7 +257,9 @@ describe('eval MCP tools', () => {
   it('summarises a run with its ranking and each model\'s lowest-scored answers', async () => {
     const report = { ...fullReport, record: { ...fullReport.record, report: { summary: 'Checks sentiment labels.', summaryModelId: 'judge' } },
       overview: { runTimeMs: 75_000, trials: { target: 6, judge: 5, optimizer: 0, failed: 1 }, totalCostUsd: 0.028, unpricedCalls: 0, cases: 1, models: 1, repetitions: 3 },
-      ranking: [{ variantId: 'variant-a', modelId: 'model-a', stage: 'baseline', round: 0, value: 81, withinNoise: false }] }
+      ranking: [{ variantId: 'variant-a', modelId: 'model-a', stage: 'baseline', round: 0, value: 81, withinNoise: false },
+        { variantId: 'variant-b', modelId: 'model-b', stage: 'baseline', round: 0, value: 79, withinNoise: true, noiseBasis: 'paired',
+          delta: { pairs: 6, independentGroups: 6, delta: -2, lower: -5, upper: 1, complete: true } }] }
     const lowest = { success: true, total: 5, data: [{ id: 't1', caseId: 'c', repetition: 0, status: 'completed', output: 'neutral', outputTruncated: false,
       inferenceIds: ['secret-receipt'], grade: { passed: false, judgeScore: 20, judgeCriteria: [{ id: 'label', score: 20, explanation: 'Wrong label.' }],
         checks: [{ id: 'exact', passed: false, message: 'Output does not match expected text' }, { id: 'json', passed: true }] } }] }
@@ -266,7 +268,9 @@ describe('eval MCP tools', () => {
     expect(summary.data).toMatchObject({
       status: 'completed', whatIsEvaluated: 'Checks sentiment labels.', timing: { runTimeMs: 75_000 },
       totals: { totalCostUsd: 0.028, trials: { failed: 1 } },
-      ranking: [{ rank: 1, model: 'Model A', modelId: 'model-a', value: 81, withinNoise: false }],
+      ranking: [{ rank: 1, model: 'Model A', modelId: 'model-a', value: 81, withinNoise: false },
+        // The paired difference is passed on without its bookkeeping fields.
+        { rank: 2, model: 'model-b', modelId: 'model-b', value: 79, withinNoise: true, noiseBasis: 'paired', delta: { delta: -2, lower: -5, upper: 1 } }],
       lowestScored: [{ variantId: 'variant-a', model: 'Model A', answers: [{ id: 't1', case: 'Case', output: 'neutral', passed: false, judgeScore: 20,
         judgeCriteria: [{ id: 'label', score: 20, explanation: 'Wrong label.' }], failedChecks: [{ id: 'exact', message: 'Output does not match expected text' }] }] }],
     })
@@ -367,6 +371,37 @@ describe('eval MCP tools', () => {
     fetchMock.mockResolvedValueOnce(response({ error: 'Eval run not found.' }, 404))
     await expect(call('msq_export_eval_run', { runId: 'run-1' })).rejects.toThrow('Eval run not found')
   })
+
+  it('reports runs with several arms on one model per arm, by label', async () => {
+    const row = (variantId: string, armId: string) => ({ variantId, armId, armLabel: armId, modelId: 'model-a', stage: 'baseline', round: 0, trials: 2, completed: 2, graded: 2, passed: 1, passRate: 0.5 })
+    fetchMock.mockImplementation(async () => response({ success: true, data: {
+      record: { id: 'run-arms', status: 'completed', plan: { definition: { name: 'Arms', systemPrompt: 'SECRET' }, maximumCalls: 4,
+        targets: [{ armId: 'brief', label: 'Brief prompt', modelId: 'model-a', name: 'Model A' }, { armId: 'full', label: 'Full prompt', modelId: 'model-a', name: 'Model A' }] } },
+      variants: [{ id: 'v-full', armId: 'full', modelId: 'model-a', round: 0, skippedReason: 'Skipped.' }],
+      summary: [row('v-brief', 'brief'), row('v-full', 'full')],
+      ranking: [{ variantId: 'v-brief', armId: 'brief', modelId: 'model-a', value: 0.5, withinNoise: false }],
+      spend: {} } }))
+    const view = await call('msq_get_eval_run', { runId: 'run-arms' }) as { data: { summary: Array<{ armId: string; model: string }>; skipped: Array<{ armId: string; model: string }> } }
+    expect(view.data.summary.map(item => [item.armId, item.model])).toEqual([['brief', 'Brief prompt'], ['full', 'Full prompt']])
+    expect(view.data.skipped).toEqual([{ id: 'v-full', armId: 'full', modelId: 'model-a', round: 0, skippedReason: 'Skipped.', model: 'Full prompt' }])
+  })
+
+  it('copies an eval and re-runs a run\'s failed requests through their own routes', async () => {
+    fetchMock.mockImplementation(async () => response({ success: true, data: { id: 'copy', revision: 1, name: 'Second attempt' } }))
+    expect(await call('msq_clone_eval', { suiteId: 'suite-1', name: 'Second attempt' })).toMatchObject({ data: { id: 'copy', revision: 1 } })
+    let [url, init] = fetchMock.mock.calls[0]
+    expect([url, init.method, JSON.parse(init.body)]).toEqual(['https://api.missionsquad.invalid/v1/core/evals/suite-1/clone', 'POST', { name: 'Second attempt' }])
+    await call('msq_clone_eval', { suiteId: 'suite-1' })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({})
+
+    fetchMock.mockReset()
+    fetchMock.mockImplementation(async () => response({ success: true, data: { id: 'run-3', status: 'queued', kind: 'rerun', parentRunId: 'run-1', queuePosition: 1, plan: { definition: { systemPrompt: 'SECRET' } } } }))
+    // The new run is returned without its plan.
+    expect(await call('msq_rerun_failed_eval_run', { runId: 'run-1', idempotencyKey: 'rerun-1' }))
+      .toEqual({ success: true, data: { id: 'run-3', status: 'queued', kind: 'rerun', parentRunId: 'run-1', queuePosition: 1 } });
+    [url, init] = fetchMock.mock.calls[0]
+    expect([url, init.method, JSON.parse(init.body)]).toEqual(['https://api.missionsquad.invalid/v1/core/eval-runs/run-1/rerun-failed', 'POST', { idempotencyKey: 'rerun-1' }])
+  })
 })
 
 it('times out a stalled export body after headers arrive', async () => {
@@ -392,4 +427,6 @@ it.each([
 ])('rejects path aliases in %s instead of returning another endpoint', (name, args) => {
   const tool = evalTools.find(tool => tool.name === name)!
   expect(tool.parameters.safeParse(args).success).toBe(false)
+
 })
+
