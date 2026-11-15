@@ -264,7 +264,7 @@ export const EvalPreviewToolSchema = EvalPreviewSchema.extend({
 export const EvalStartSchema = EvalPreviewSchema.extend({
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/, 'Use the complete 64-character lowercase hexadecimal preview fingerprint.').describe('Fingerprint from the reviewed preview for this suite revision.'),
   idempotencyKey: idempotencyKey.describe('Caller-generated submission ID, such as a UUID. Reuse it with the same preview after an uncertain response. A new key can start new paid work.'),
-  emailOnCompletion: z.boolean().optional().describe('Email the overview report, with its PDF attached, to the account email when this run finishes. Off unless set. Fails with 409 where email is not set up (emailAvailable in msq_get_eval_options).'),
+  emailOnCompletion: z.boolean().optional().describe('Email the overview report, with its PDF attached, to the account email when this run ends, whatever its final status; a run cut short by a server restart is emailed too. Off unless set. Fails with 409 where email is not set up (emailAvailable in msq_get_eval_options).'),
 })
 export const EvalListSchema = z.object(pageFields)
 export const EvalResultsSchema = z.object({
