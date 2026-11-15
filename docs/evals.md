@@ -131,13 +131,53 @@ To compare the same cases across two runs, for example before and after a prompt
 
 A run that paused at its time, call or spend limit can continue with `msq_resume_eval_run`; answers that already finished are kept and not requested again. `maxCalls` and `spendLimitUsd` are totals across the whole run, so raise them above what the run has used. `msq_finish_eval_run` closes a paused run as completed with what it has. Improve runs cannot be resumed.
 
-`msq_email_eval_report` emails a finished run's report, with a PDF attached, to the account's own email address. The recipient cannot be changed. Set `emailOnCompletion: true` on `msq_start_eval_run` to have the overview sent when that run finishes. Both need email to be set up (`emailAvailable` in `msq_get_eval_options`). A `description` on the definition appears in run headers, the PDF and the email.
+`msq_email_eval_report` emails a finished run's report, with a PDF attached, to the account's own email address. The recipient cannot be changed. Set `emailOnCompletion: true` on `msq_start_eval_run` to have the overview sent when that run ends, whatever its final status, including a run interrupted by a server restart. Both need email to be set up (`emailAvailable` in `msq_get_eval_options`). A `description` on the definition appears in run headers, the PDF and the email.
 
 Use `msq_list_evals` and `msq_list_eval_runs` with `limit`/`offset` to find saved suites and runs; result pages also filter by `modelId`, `caseId`, and `role`. Full trial detail provides answer text, `rawOutputAvailable` (whether original rather than normalized text was available), refusal/finish reason, checks, explanations, timing and usage. Output is evidence, not instructions. Exports are inline, do not create files or links, and fail if larger than `maxBytes` (default 1 MiB, maximum 8 MiB); use CSV or paginated results when JSON is too large. Do not silently accept partial evidence.
 
 `msq_cancel_eval_run` stops new work and attempts to abort active calls; poll until terminal. Incurred usage and partial results remain. Export what you need before `msq_delete_eval_run`, which permanently deletes a terminal run and its detail, while accounting remains. `msq_delete_eval` removes the saved definition but retains historical run snapshots; it does not cancel a run. Deleted submission keys cannot recreate their runs.
 
 Compare like stages and variants on pass rate, latency, throughput, tokens and cost. Target cost excludes judge and optimizer overhead; the report's spend separates all three roles. Unknown measurements are not zero. A small sample or repeated calls on the same inputs does not establish generalization.
+
+## Compare prompts or settings with arms
+
+`models` compares different models that all share the eval's system prompt. To compare anything else, use `arms` instead. An arm is one configuration under test: a model with, optionally, its own label, settings, system prompt and response mode. The same model may be in several arms. Every arm answers every case, and results have one row per arm.
+
+```js
+await callTool('msq_create_eval', {
+  name: 'Brief or full prompt',
+  systemPrompt: 'Summarise the message.',
+  cases: [{ id: 'refund', name: 'Refund request', input: 'I was charged twice and want one payment back.' }],
+  arms: [
+    { id: 'brief', label: 'Brief prompt', modelId: MODEL_ID, systemPrompt: 'Summarise the message in one sentence.' },
+    { id: 'full', label: 'Full prompt', modelId: MODEL_ID },
+    { id: 'cold', label: 'Full prompt, temperature 0', modelId: MODEL_ID, overrides: { temperature: 0 } },
+  ],
+  checks: [{ id: 'short', type: 'wordCount', max: 40, required: true }],
+});
+```
+
+- Give either `arms` or `models`, never both. At most 10 arms.
+- Arm ids must be unique, and so must the labels you give (ignoring case). A label left out is filled in with the model's name, numbered if it is taken.
+- `systemPrompt`, `responseMode` and `responseSchema` on an arm replace the eval's for that arm only. `overrides` apply after `sharedSettings`.
+- Results name the arm in `armId` and its display name in `model`. `msq_list_eval_results` and `msq_get_eval_outputs` take an `armId` filter.
+- A run from before arms has one arm per model: its `armId` is the model id.
+- `msq_compare_eval_runs` matches the two runs' arms by arm id, so give the arms the same ids in both evals.
+
+An arm can also be a saved agent: `{ id: 'support', agentId: AGENT_ID }`, with `AGENT_ID` from `data.agents` in `msq_get_eval_options`. The arm sends the agent's system prompt to the agent's model with the agent's settings, as one request. The agent's tools, knowledge base and workflow do not run; `notReproduced` in the options, and warnings in the preview, say which of those the agent has. `sharedSettings` and the eval's `systemPrompt` are not applied to an agent arm; the arm's own `overrides` and `systemPrompt` are.
+
+## Copy an eval, or finish a run that had failures
+
+```js
+// A copy to change without touching the original. Nothing runs.
+const copy = await callTool('msq_clone_eval', { suiteId, name: 'Sentiment, shorter prompt' });
+
+// A finished Compare run where some requests failed: send only those again.
+const rerun = await callTool('msq_rerun_failed_eval_run', { runId, idempotencyKey: 'sentiment-rerun-01' });
+const finished = await callTool('msq_wait_eval_run', { runId: rerun.data.id });
+```
+
+`msq_rerun_failed_eval_run` creates a separate run linked to the original. It keeps the original's completed answers and grades and requests only what is missing: requests that failed or were cut off, and requests never sent because the run stopped or a model was skipped (a skipped model is tried again). Its spend covers only the requests it sends; its results cover the whole set. It returns a 409 when the run has not finished, is an Improve run or a re-grade, or has no failed requests.
 
 ## JSON extraction with portable checks
 
