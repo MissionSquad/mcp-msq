@@ -14,6 +14,7 @@ This server exposes MissionSquad account-scoped operations for models, agents, p
 - Bounded binary file-content retrieval (`GET /v1/files/:id/content`) with truncation metadata
 - Compact MCP server discovery output for installed/enabled servers only
 - Agent Pages management (owner builder API under `/v1/core/pages`) plus the anonymous public page read/run surface
+- Account usage, model pricing, usage recommendations and a monthly usage budget with email/webhook alerts
 - Build/test CI and npm publish workflow
 
 ## Verified API Coverage
@@ -107,6 +108,28 @@ Requires MissionSquad API 1.89 or later; `msq_regrade_eval_run`, failed-trial re
 - `msq_cancel_eval_run`
 - `msq_export_eval_run`
 - `msq_delete_eval_run`
+
+### Usage, Cost and Budgets
+
+Requires MissionSquad API 1.104 or later. Before that version the usage routes accept a session cookie only and the recommendation and budget routes do not exist, so the usage, recommendation and budget tools return 401 or 404. `msq_get_model_pricing` and `msq_get_builtin_model_usage` work with earlier versions. Like the eval tools, they return compact JSON and report invalid arguments field by field. The API's response is passed through unchanged.
+
+Every usage tool takes a window: `last` (for example `"24h"` or `"30d"`, default `"30d"`), or both `start` and `end` as ISO 8601 timestamps. In results, `cost.amountUsd` is provider cost in US dollars and is `null` when nothing could be priced; `cost.unpricedCalls` counts the calls that amount leaves out.
+
+- `msq_get_usage_summary`: one total for the window (calls, tokens, errors, average duration, cost)
+- `msq_get_usage_by_model`: the same figures per provider model
+- `msq_get_usage_by_agent`: calls, tokens and cost per agent and the model it called
+- `msq_get_usage_timeseries`: the same figures per UTC hour, day or month
+- `msq_get_usage_billing`: cost per model, optionally split by UTC day or month
+- `msq_get_model_pricing`: list prices for up to 200 provider/model pairs
+- `msq_get_builtin_model_usage`: monthly token allowance of the built-in models
+- `msq_get_usage_recommendations`: ranked findings over the last 1 to 90 days (cheaper model for an agent, failing model, failing tool, unused agent, unpriced usage). Cheaper-model findings compare list prices only
+- `msq_get_usage_budget`: the monthly budget and month-to-date spend
+- `msq_set_usage_budget`: create or replace the budget (limit, alert percentages, email, webhook). Replaces the whole budget
+- `msq_delete_usage_budget`
+- `msq_test_usage_budget`: send a labelled test alert by email and webhook
+- `msq_list_usage_budget_alerts`: thresholds that have fired, with delivery results
+
+A budget only sends alerts. It does not stop model calls at the limit.
 
 ### Core OpenAI-Compatible
 

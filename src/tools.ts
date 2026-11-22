@@ -1,5 +1,6 @@
 import { defineTool } from './tool-definition.js'
 import { evalTools } from './eval-tools.js'
+import { insightTools } from './insight-tools.js'
 import { deferredValidation, validateToolArguments } from './tool-validation.js'
 import type { FastMCP } from '@missionsquad/fastmcp'
 import { z } from 'zod'
@@ -3255,14 +3256,16 @@ const msqTools = [
       waitForPublicPageRun(client, args.slug, args.runId, args.timeoutSeconds * 1000),
   }),
   ...evalTools,
+  ...insightTools,
 ] as const
 
 export const MSQ_TOOL_NAMES = msqTools.map((tool) => tool.name)
 
 export function registerMissionSquadTools(server: FastMCP<undefined>): void {
-  const evalToolNames = new Set<string>(evalTools.map(tool => tool.name))
+  // These tools report invalid arguments field by field and return compact JSON.
+  const detailedToolNames = new Set<string>([...evalTools, ...insightTools].map(tool => tool.name))
   for (const tool of msqTools) {
-    const detailedValidation = evalToolNames.has(tool.name)
+    const detailedValidation = detailedToolNames.has(tool.name)
     server.addTool({
       name: tool.name,
       description: tool.description,
