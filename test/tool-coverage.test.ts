@@ -141,6 +141,15 @@ const EXPECTED_TOOL_NAMES = [
   'msq_delete_usage_budget',
   'msq_test_usage_budget',
   'msq_list_usage_budget_alerts',
+  'msq_list_skills',
+  'msq_get_skill',
+  'msq_create_skill',
+  'msq_update_skill',
+  'msq_delete_skill',
+  'msq_import_skill',
+  'msq_set_agent_skills',
+  'msq_get_directives',
+  'msq_set_directives',
 ] as const
 
 describe('MissionSquad MCP tool coverage', () => {
