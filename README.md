@@ -15,6 +15,7 @@ This server exposes MissionSquad account-scoped operations for models, agents, p
 - Compact MCP server discovery output for installed/enabled servers only
 - Agent Pages management (owner builder API under `/v1/core/pages`) plus the anonymous public page read/run surface
 - Account usage, model pricing, usage recommendations and a monthly usage budget with email/webhook alerts
+- Skills (reusable instructions agents load on demand) and account-wide directives
 - Build/test CI and npm publish workflow
 
 ## Verified API Coverage
@@ -130,6 +131,24 @@ Every usage tool takes a window: `last` (for example `"24h"` or `"30d"`, default
 - `msq_list_usage_budget_alerts`: thresholds that have fired, with delivery results
 
 A budget only sends alerts. It does not stop model calls at the limit.
+
+### Skills and Account Directives
+
+Requires missionsquad-api 1.105.0 or later.
+
+A skill is a named set of instructions for one kind of task. An agent that has a skill sees only its name and description, and loads the full instructions with its `load_skill` tool when a task matches. Account directives are one block of text added to the system prompt of every agent on the account.
+
+- `msq_list_skills`: the account's skills (with the agents using each) and skills shared with it. No instructions
+- `msq_get_skill`: one skill in full, including its SKILL.md text
+- `msq_create_skill`: create a skill (`name`, `description`, `instructions`, optional `enabled`)
+- `msq_update_skill`: replace a skill by id. Name, description and instructions are all replaced; `enabled` is kept when omitted
+- `msq_delete_skill`: delete a skill and detach it from every agent that uses it
+- `msq_import_skill`: create a skill from the text of a SKILL.md file. Bundled files and scripts are not imported
+- `msq_set_agent_skills`: set the complete skill list of an agent, by skill name or id
+- `msq_get_directives`: read the account directives
+- `msq_set_directives`: replace the account directives. An empty string clears them
+
+Directives do not apply to the account's title agent or config agent. Sharing skills between accounts is done in the web app.
 
 ### Core OpenAI-Compatible
 
